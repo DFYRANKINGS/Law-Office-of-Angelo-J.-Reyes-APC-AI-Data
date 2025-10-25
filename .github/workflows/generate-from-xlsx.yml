@@ -17,6 +17,19 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
+      - name: DEBUG - Print Token Length (Safe)
+        run: |
+          TOKEN_LENGTH=${#GH_TOKEN}
+          echo "🔑 GH_TOKEN length: $TOKEN_LENGTH characters"
+          if [ "$TOKEN_LENGTH" -eq 0 ]; then
+            echo "❌ ERROR: GH_TOKEN is EMPTY or NOT SET"
+            exit 1
+          else
+            echo "✅ GH_TOKEN is set (length: $TOKEN_LENGTH)"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -122,3 +135,4 @@ jobs:
           git fetch origin ${{ github.ref_name }}
           git log -1 origin/${{ github.ref_name }} --oneline
           echo "✅ If commit above matches, SUCCESS! Files are live at Raw URLs."
+
