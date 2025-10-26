@@ -1,0 +1,76 @@
+name: 📊 Generate Schema Files from Excel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'templates/AI-Visibility-Master-Template.xlsx'
+
+jobs:
+  generate-schemas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install pandas openpyxl
+
+      - name: 🖨️ Generate schema files from Excel
+        run: |
+          cd ai-generators
+          python generate_files_from_xlsx.py --input ../templates/AI-Visibility-Master-Template.xlsx
+
+      - name: 🔍 SHOW CURRENT STATE
+        run: |
+          echo "=== BRANCH & REMOTE INFO ==="
+          git branch -a
+          git remote -v
+          git status
+          echo ""
+          echo "=== FILES IN schemas/Help Articles/ ==="
+          ls -la schemas/Help\ Articles/ | head -10
+          echo ""
+          echo "=== GIT DIFF ==="
+          git diff --stat
+
+      - name: 💾 FORCE ADD + COMMIT + PUSH
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Force add all files in schemas/
+          echo "=== FORCING ADD OF ALL FILES IN schemas/ ==="
+          git add --all schemas/
+          
+          # Show what's staged
+          echo "=== STAGED CHANGES ==="
+          git status --porcelain
+          
+          # Force commit (ignore "nothing to commit")
+          echo "=== CREATING COMMIT ==="
+          git commit -m "AUTO: Update schema files from Excel" || echo "⚠️ No changes detected — forcing empty commit"
+          
+          # If no changes, create empty commit to force push
+          if git diff --cached --quiet; then
+            echo "=== CREATING EMPTY COMMIT TO TRIGGER PUSH ==="
+            git commit --allow-empty -m "AUTO: Force update schema files"
+          fi
+          
+          # Push with debug
+          echo "=== ATTEMPTING PUSH ==="
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main && echo "✅ PUSH SUCCEEDED" || (echo "❌ PUSH FAILED" && exit 1)
+          
+          echo "=== FINAL STATUS ==="
+          git log -1 --oneline
