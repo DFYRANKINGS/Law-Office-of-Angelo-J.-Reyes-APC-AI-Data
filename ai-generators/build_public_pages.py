@@ -394,8 +394,8 @@ def generate_page(title, content):
 def generate_contact_page():
     """
     Builds contact.html from schemas/locations/*.{json,yaml,yml}
-    Normalizes column names, supports nested shapes, and renders one clean card per location.
-    Shows 'Quick Contact' summary only when multiple locations exist.
+    Always renders a top 'Quick Contact' card (name/email/phone) from the first location,
+    then renders full location card(s) below.
     """
     locations_dir = "schemas/locations"
     print(f"🔍 Checking contact data in: {locations_dir}")
@@ -415,7 +415,9 @@ def generate_contact_page():
 
     items = []
     files_seen = records_seen = rendered = 0
-    all_phones, all_emails = [], []
+    first_name = ""
+    first_phone = ""
+    first_email = ""
 
     for fname in sorted(os.listdir(locations_dir)):
         if not fname.lower().endswith((".json", ".yaml", ".yml")):
@@ -439,8 +441,13 @@ def generate_contact_page():
             site, socials = _extract_site_and_social(loc)
             map_src = _map_embed_src(loc, addr)
 
-            if phone: all_phones.append(phone)
-            if email: all_emails.append(email)
+            # Capture for Quick Contact (first record only)
+            if not first_name:
+                first_name = name or ""
+            if not first_phone and phone:
+                first_phone = phone
+            if not first_email and email:
+                first_email = email
 
             block = f"<div class='card'>"
             block += f"<h3>{escape_html(name)}</h3><p>"
@@ -479,16 +486,17 @@ def generate_contact_page():
         print(f"⚠️ No usable contact info found (scanned {files_seen} files, {records_seen} records). Skipping contact.html")
         return False
 
-    # Intro + Quick Contact (ONLY if multiple locations)
+    # Intro + ALWAYS show Quick Contact (name + email + phone) from first record
     intro = "<p>We’d love to hear from you. Reach out using the details below or visit us at our offices.</p>"
-    if len(items) > 1:
-        top_phone = all_phones[0] if all_phones else ""
-        top_email = all_emails[0] if all_emails else ""
-        if top_phone or top_email:
-            intro += "<div class='card'><h2>Quick Contact</h2>"
-            if top_phone: intro += f"<p><strong>Phone:</strong> {escape_html(top_phone)}</p>"
-            if top_email: intro += f'<p><strong>Email:</strong> <a href="mailto:{escape_html(top_email)}">{escape_html(top_email)}</a></p>'
-            intro += "</div>"
+    if first_name or first_phone or first_email:
+        intro += "<div class='card'><h2>Quick Contact</h2>"
+        if first_name:
+            intro += f"<p><strong>{escape_html(first_name)}</strong></p>"
+        if first_phone:
+            intro += f"<p><strong>Phone:</strong> <a href='tel:{escape_html(first_phone)}'>{escape_html(first_phone)}</a></p>"
+        if first_email:
+            intro += f"<p><strong>Email:</strong> <a href='mailto:{escape_html(first_email)}'>{escape_html(first_email)}</a></p>"
+        intro += "</div>"
 
     content = intro + "".join(items)
     with open("contact.html", "w", encoding="utf-8") as f:
@@ -631,7 +639,10 @@ def generate_testimonials_page():
     return True
 
 def generate_index_page():
-    """Generate directory + welcome page — DYNAMIC REPO URL + entity title handled in <title>."""
+    """Home: show 'Welcome to {Entity}' in the visible H1 and keep <title> = '{Entity} — Welcome'."""
+    org = load_org_meta()
+    site_name = org.get("name") or "Site"
+
     links = [
         ("About Us", "about.html"),
         ("Our Services", "services.html"),
@@ -650,7 +661,6 @@ def generate_index_page():
     repo_slug = os.getenv('GITHUB_REPOSITORY')
     if not repo_slug:
         print("❌ ERROR: GITHUB_REPOSITORY environment variable not set!")
-        print("   Make sure you're running this in GitHub Actions.")
         sys.exit(1)
 
     base_url = f"https://raw.githubusercontent.com/{repo_slug}/main"
@@ -676,9 +686,9 @@ def generate_index_page():
     </ul>
     """
 
-    # Use a simple page title so final <title> is "{Entity} — Welcome"
+    # Pass a visible header that includes the entity name.
     with open("index.html", "w", encoding="utf-8") as f:
-        f.write(generate_page("Welcome", content))
+        f.write(generate_page(f"Welcome to {site_name}", content))
     print("✅ index.html generated")
     return True
 
