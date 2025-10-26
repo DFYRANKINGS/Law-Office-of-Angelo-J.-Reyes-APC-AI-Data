@@ -53,7 +53,6 @@ def load_data(filepath):
     return []
 
 def generate_nav():
-    # Always include Help link — we'll generate help.html separately
     return """
     <nav style="background: #2c3e50; padding: 1rem; margin-bottom: 2rem;">
         <ul style="list-style: none; display: flex; gap: 2rem; margin: 0; padding: 0; flex-wrap: wrap; justify-content: center;">
@@ -99,7 +98,7 @@ def generate_page(title, content):
 </html>"""
 
 def generate_contact_page():
-    locations_dir = "schemas/Locations"  # ← USES YOUR EXACT FOLDER NAME
+    locations_dir = "schemas/Locations"
     print(f"🔍 Checking contact data in: {locations_dir}")
     if not os.path.exists(locations_dir):
         print(f"❌ Locations directory not found: {locations_dir} — skipping contact.html")
@@ -151,7 +150,7 @@ def generate_contact_page():
     return True
 
 def generate_services_page():
-    services_dir = "schemas/Services"  # ← USES YOUR EXACT FOLDER NAME
+    services_dir = "schemas/Services"
     print(f"🔍 Checking services data in: {services_dir}")
     if not os.path.exists(services_dir):
         print(f"❌ Services directory not found: {services_dir} — skipping services.html")
@@ -194,7 +193,7 @@ def generate_services_page():
     return True
 
 def generate_testimonials_page():
-    reviews_dir = "schemas/Reviews"  # ← USES YOUR EXACT FOLDER NAME
+    reviews_dir = "schemas/Reviews"
     print(f"🔍 Checking testimonials data in: {reviews_dir}")
     if not os.path.exists(reviews_dir):
         print(f"❌ Reviews directory not found: {reviews_dir} — skipping testimonials.html")
@@ -210,7 +209,8 @@ def generate_testimonials_page():
             rev_list = rev_data if isinstance(rev_data, list) else [rev_data]
             for rev in rev_list:
                 author = rev.get('customer_name') or rev.get('author') or 'Anonymous'
-                company = rev.get('client_name') or rev.get('company') or ''
+                # ✅ FIXED: Use entity_name instead of client_name/company
+                entity = rev.get('entity_name') or ''  # ← Industry standard term
                 quote = rev.get('review_body') or rev.get('quote') or rev.get('review_title') or 'No review text provided.'
                 rating = int(rev.get('rating', 5))
                 date = rev.get('date') or ''
@@ -221,7 +221,7 @@ def generate_testimonials_page():
                 <blockquote class="card" style="font-style: italic;">
                     <p>“{escape_html(quote)}”</p>
                     <footer style="margin-top: 1rem; font-style: normal;">
-                        — {escape_html(author)}{f', {escape_html(company)}' if company else ''}
+                        — {escape_html(author)}{f', {escape_html(entity)}' if entity else ''}
                         {f'<br/><small>{date}</small>' if date else ''}
                     </footer>
                     <div style="margin-top: 0.5rem; color: #f39c12;">{star_display}</div>
@@ -239,7 +239,7 @@ def generate_testimonials_page():
     return True
 
 def generate_index_page():
-    """Generate directory + welcome page — ALWAYS GENERATED"""
+    """Generate directory + welcome page — DYNAMIC REPO URL"""
     links = [
         ("About Us", "about.html"),
         ("Our Services", "services.html"),
@@ -253,7 +253,17 @@ def generate_index_page():
     quick_links = "\n".join(f'<li style="margin: 0.5rem 0;"><a href="{url}" style="font-size: 1.1em; font-weight: 500;">{escape_html(name)}</a></li>' for name, url in links)
 
     file_links = []
-    base_url = f"https://raw.githubusercontent.com/{os.getenv('GITHUB_REPOSITORY', 'DFYRANKINGS/AI-Visibility-Services')}/main"
+    
+    # ✅ FIXED: Dynamic GitHub repo URL — works for ANY account/repo
+    repo_slug = os.getenv('GITHUB_REPOSITORY')
+    if not repo_slug:
+        print("❌ ERROR: GITHUB_REPOSITORY environment variable not set!")
+        print("   Make sure you're running this in GitHub Actions.")
+        sys.exit(1)
+
+    base_url = f"https://raw.githubusercontent.com/{repo_slug}/main"
+    print(f"🌐 Base URL for schema files: {base_url}")
+
     for root, dirs, files in os.walk("schemas"):
         for file in files:
             if file.endswith((".json", ".yaml", ".md", ".llm")):
@@ -278,11 +288,11 @@ def generate_index_page():
 
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(generate_page("Welcome", content))
-    print("✅ index.html generated (fallback created)")
+    print("✅ index.html generated")
     return True
 
 def generate_about_page():
-    org_dir = "schemas/organization"  # ← USES YOUR EXACT FOLDER NAME
+    org_dir = "schemas/organization"
     print(f"🔍 Scanning {org_dir} for organization data...")
 
     if not os.path.exists(org_dir):
@@ -337,7 +347,7 @@ def generate_about_page():
     return True
 
 def generate_faq_page():
-    faq_dir = "schemas/FAQs"  # ← USES YOUR EXACT FOLDER NAME
+    faq_dir = "schemas/FAQs"
     print(f"🔍 Checking FAQs in: {faq_dir}")
     if not os.path.exists(faq_dir):
         print(f"❌ FAQ directory not found: {faq_dir} — skipping faqs.html")
@@ -374,7 +384,7 @@ def generate_faq_page():
     return True
 
 def generate_help_articles_page():
-    help_dir = "schemas/Help Articles"  # ← USES YOUR EXACT FOLDER NAME
+    help_dir = "schemas/Help Articles"
     print(f"🔍 Looking for help articles in: {help_dir}")
     if not os.path.exists(help_dir):
         print(f"❌ Folder not found: {help_dir}")
@@ -444,21 +454,25 @@ def generate_help_articles_page():
     return True
 
 if __name__ == "__main__":
-    print("🚀 STARTING build_public_pages.py")
-    print(f"📂 CURRENT WORKING DIRECTORY: {os.getcwd()}")
+    print("🚀 STARTING build_public_pages.py — GENERIC VERSION FOR ANY REPO")
 
-    # Ensure we're in repo root
+    # 💥 BULLETPROOF WORKING DIRECTORY SETUP
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+    os.chdir(REPO_ROOT)
+    print(f"✅ WORKING DIRECTORY SET TO: {REPO_ROOT}")
+
+    # Verify schemas exists
     if not os.path.exists("schemas"):
-        print("⚠️ schemas/ not found in current dir — trying to move up one level...")
-        os.chdir("..")
-        print(f"📂 Switched to: {os.getcwd()}")
-
-    # Debug: Show what's in schemas/
-    if os.path.exists("schemas"):
-        print(f"📁 SCHEMAS SUBFOLDERS: {os.listdir('schemas')}")
-    else:
-        print("❌ FATAL: schemas/ folder not found even after cd ..")
+        print("❌ FATAL: schemas/ folder not found at repo root")
         sys.exit(1)
+    else:
+        print(f"📁 schemas/ contents: {os.listdir('schemas')[:5]}")
+
+    # ✅ CREATE .nojekyll — REQUIRED FOR GITHUB PAGES TO SERVE ALL FILES
+    with open(".nojekyll", "w") as f:
+        pass  # Empty file
+    print("✅ Created .nojekyll file for GitHub Pages")
 
     # FORCE REBUILD — delete old files
     html_files = ["index.html", "about.html", "services.html", "testimonials.html", "faqs.html", "help.html", "contact.html"]
@@ -467,35 +481,23 @@ if __name__ == "__main__":
             os.remove(f)
             print(f"🗑️ Deleted old {f} — forcing rebuild")
 
-    # ✅ ALWAYS generate index.html FIRST — fallback safety net
-    try:
-        generate_index_page()
-    except Exception as e:
-        print(f"❌ CRITICAL: Failed to generate index.html: {e}")
-        # Create minimal fallback
-        with open("index.html", "w", encoding="utf-8") as f:
-            f.write(generate_page("AI Data Hub", "<p>⚠️ System Error: Check logs. This page should always exist.</p>"))
-        print("✅ EMERGENCY fallback index.html created")
-
-    # Generate other pages — failures won't break the build
-    generators = [
-        (generate_about_page, "about.html"),
-        (generate_services_page, "services.html"),
-        (generate_testimonials_page, "testimonials.html"),
-        (generate_faq_page, "faqs.html"),
-        (generate_help_articles_page, "help.html"),
-        (generate_contact_page, "contact.html")
+    # Generate all pages — wrapped for safety
+    page_generators = [
+        ("index.html", generate_index_page),
+        ("about.html", generate_about_page),
+        ("services.html", generate_services_page),
+        ("testimonials.html", generate_testimonials_page),
+        ("faqs.html", generate_faq_page),
+        ("help.html", generate_help_articles_page),
+        ("contact.html", generate_contact_page),
     ]
 
-    for generator, name in generators:
+    for filename, generator in page_generators:
         try:
-            success = generator()  # Most now return True/False
-            if success is not False:  # If function doesn't return False, assume success
-                print(f"✅ {name} generation completed")
+            success = generator()
+            if success is not False:
+                print(f"✅ {filename} generated successfully")
         except Exception as e:
-            print(f"❌ {name} crashed: {e}")
-            # Optional: create placeholder
-            # with open(name, "w", encoding="utf-8") as f:
-            #     f.write(generate_page(name.replace(".html", "").title(), "<p>⚠️ Temporarily unavailable. Check back soon.</p>"))
+            print(f"❌ {filename} generation failed: {e}")
 
-    print("\n🎉 BUILD PROCESS COMPLETE — at least index.html exists and workflow will succeed.")
+    print("\n🎉 BUILD COMPLETE — site ready for GitHub Pages deployment")
