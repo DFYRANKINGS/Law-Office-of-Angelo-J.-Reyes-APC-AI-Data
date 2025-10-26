@@ -270,28 +270,90 @@ def generate_services_page():
         print(f"❌ Services directory not found: {services_dir} — skipping services.html")
         return False
 
+    def _title_from_filename(path):
+        base = os.path.splitext(os.path.basename(path))[0]
+        return base.replace("-", " ").replace("_", " ").strip().title()
+
+    def _guess_title(obj, filename):
+        # Prefer explicit service fields, then generic, then filename
+        return _first_nonempty(
+            obj.get("title"),
+            obj.get("service_name"),
+            obj.get("name"),
+            obj.get("headline"),
+            obj.get("service"),
+            obj.get("offering"),
+            obj.get("product_name"),
+            obj.get("category"),
+            obj.get("subtype"),
+            obj.get("type"),
+            obj.get("label"),
+        ) or _title_from_filename(filename)
+
+    def _guess_description(obj):
+        return _first_nonempty(
+            obj.get("description"),
+            obj.get("summary"),
+            obj.get("details"),
+            obj.get("body"),
+            obj.get("content"),
+            obj.get("answer"),
+        ) or ""
+
+    def _guess_price(obj):
+        return _first_nonempty(
+            obj.get("price"),
+            obj.get("price_range"),
+            obj.get("starting_price"),
+            obj.get("min_price"),
+            obj.get("cost"),
+            obj.get("fee"),
+        ) or "Contact for pricing"
+
     items = []
-    for file in os.listdir(services_dir):
-        if file.endswith((".json", ".yaml", ".yml")):
-            filepath = os.path.join(services_dir, file)
-            svc_data = load_data(filepath)
-            if not svc_data:
+    unnamed_fallbacks = 0
+    files_processed = 0
+
+    for file in sorted(os.listdir(services_dir)):
+        if not file.endswith((".json", ".yaml", ".yml")):
+            continue
+        filepath = os.path.join(services_dir, file)
+        data = load_data(filepath)
+        if not data:
+            continue
+        files_processed += 1
+
+        # Some files wrap services under a top-level list or key like "services"
+        records = data if isinstance(data, list) else [data]
+        expanded = []
+        for rec in records:
+            if isinstance(rec, dict) and isinstance(rec.get("services"), list):
+                expanded.extend(rec["services"])
+            else:
+                expanded.append(rec)
+
+        for svc in expanded:
+            if not isinstance(svc, dict):
                 continue
-            for svc in (svc_data if isinstance(svc_data, list) else [svc_data]):
-                title = svc.get('title') or svc.get('service_name') or 'Unnamed Service'
-                description = svc.get('description') or ''
-                price = svc.get('price') or svc.get('price_range') or 'Contact for pricing'
-                slug = svc.get('slug') or slugify(title)
-                featured = svc.get('featured', False)
-                badge = '<span class="badge">Featured</span>' if featured else ''
-                items.append(f"""
-                <div class="card" id="{escape_html(slug)}">
-                    <h2>{escape_html(title)} {badge}</h2>
-                    <p>{escape_html(description)}</p>
-                    <p><strong>Starting at:</strong> {escape_html(price)}</p>
-                    <a href="#{slug}" style="display: inline-block; margin-top: 1rem;">🔗 Permalink</a>
-                </div>
-                """)
+
+            title = _guess_title(svc, filepath)
+            if title == _title_from_filename(filepath):
+                unnamed_fallbacks += 1  # we had to fallback to filename
+
+            description = _guess_description(svc)
+            price = _guess_price(svc)
+            featured = bool(svc.get("featured") or svc.get("is_featured"))
+            slug = svc.get("slug") or slugify(title)
+            badge = '<span class="badge">Featured</span>' if featured else ''
+
+            items.append(f"""
+            <div class="card" id="{escape_html(slug)}">
+                <h2>{escape_html(title)} {badge}</h2>
+                {'<p>' + escape_html(description) + '</p>' if description else ''}
+                <p><strong>Starting at:</strong> {escape_html(price)}</p>
+                <a href="#{slug}" style="display: inline-block; margin-top: 1rem;">🔗 Permalink</a>
+            </div>
+            """)
 
     if not items:
         print("⚠️ No valid services found — skipping services.html")
@@ -299,7 +361,13 @@ def generate_services_page():
 
     with open("services.html", "w", encoding="utf-8") as f:
         f.write(generate_page("Our Services", "".join(items)))
-    print(f"✅ services.html generated ({len(items)} services)")
+
+    # Gentle heads-up if we had to fall back
+    if unnamed_fallbacks:
+        print(f"ℹ️ {unnamed_fallbacks} service(s) were titled from filenames because no explicit title fields were found.")
+        print("   Tip: add one of these keys to each service: title | service_name | name | headline | service | offering")
+
+    print(f"✅ services.html generated ({len(items)} services from {files_processed} file(s))")
     return True
 
 def generate_testimonials_page():
