@@ -294,51 +294,197 @@ def generate_page(title, content):
 # Page generators
 # -------------------------
 def generate_contact_page():
-    locations_dir = "schemas/locations"  # ✅ lowercase
+    """
+    Builds contact.html from schemas/locations/*.{json,yaml,yml}
+    - Accepts many common field names (phone/telephone, address/streetAddress, etc.)
+    - Renders name, address, phone, email, hours, website, social links, and a map.
+    - If only address exists, creates a Google Maps embed from the address.
+    """
+    locations_dir = "schemas/locations"
     print(f"🔍 Checking contact data in: {locations_dir}")
     if not os.path.exists(locations_dir):
         print(f"❌ Locations directory not found: {locations_dir} — skipping contact.html")
         return False
 
-    items = []
-    for file in os.listdir(locations_dir):
-        if file.endswith((".json", ".yaml", ".yml")):
-            filepath = os.path.join(locations_dir, file)
-            loc_data = load_data(filepath)
-            if not loc_data:
-                continue
-            for loc in (loc_data if isinstance(loc_data, list) else [loc_data]):
-                name = loc.get('name') or loc.get('location_name') or 'Location'
-                address = loc.get('address') or ''
-                phone = loc.get('phone') or ''
-                email = loc.get('email') or ''
-                hours = loc.get('hours') or ''
-                map_url = loc.get('map_embed_url') or loc.get('google_maps_url') or ''
+    def _first_nonempty(*vals):
+        for v in vals:
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            # accept simple dict-like nested strings sometimes used: {"@value": "..."}
+            if isinstance(v, dict) and "@value" in v and isinstance(v["@value"], str) and v["@value"].strip():
+                return v["@value"].strip()
+        return ""
 
-                item_html = f"""
-                <div class="card">
-                    <h3>{escape_html(name)}</h3>
-                    {f'<p><strong>Address:</strong> {escape_html(address)}</p>' if address else ''}
-                    {f'<p><strong>Phone:</strong> {escape_html(phone)}</p>' if phone else ''}
-                    {f'<p><strong>Email:</strong> <a href="mailto:{email}">{escape_html(email)}</a></p>' if email else ''}
-                    {f'<p><strong>Hours:</strong> {escape_html(hours)}</p>' if hours else ''}
+    def _as_list(val):
+        if val is None:
+            return []
+        if isinstance(val, list):
+            return [x for x in val if isinstance(x, str) and x.strip()]
+        if isinstance(val, str) and val.strip():
+            return [s.strip() for s in val.split(",") if s.strip()]
+        return []
+
+    def _map_embed_src(address, google_maps_url):
+        # Prefer provided embed or maps URL; otherwise synthesize a query embed from address
+        raw = (google_maps_url or "")
+        if raw:
+            # If it already looks like an embed or maps link, just use it in an iframe.
+            return raw
+        if address:
+            from urllib.parse import quote_plus
+            q = quote_plus(address)
+            # Simple public embed using query param (no API key needed)
+            return f"https://www.google.com/maps?q={q}&output=embed"
+        return ""
+
+    items = []
+    files_seen = 0
+    records_seen = 0
+    rendered = 0
+
+    for file in sorted(os.listdir(locations_dir)):
+        if not file.lower().endswith((".json", ".yaml", ".yml")):
+            continue
+        files_seen += 1
+        filepath = os.path.join(locations_dir, file)
+        data = load_data(filepath)
+        if not data:
+            continue
+
+        records = data if isinstance(data, list) else [data]
+        for loc in records:
+            if not isinstance(loc, dict):
+                continue
+            records_seen += 1
+
+            # --- Flexible field extraction ---
+            name = _first_nonempty(
+                loc.get('name'),
+                loc.get('location_name'),
+                loc.get('entity_name'),
+                loc.get('branch_name'),
+                loc.get('department'),
+            ) or "Location"
+
+            address = _first_nonempty(
+                loc.get('address'),
+                loc.get('streetAddress'),
+                loc.get('formatted_address'),
+                loc.get('address_line'),
+            )
+
+            # Build a single-line address if given as components
+            if not address:
+                line1 = _first_nonempty(loc.get("address1"), loc.get("address_line_1"), loc.get("street"))
+                line2 = _first_nonempty(loc.get("address2"), loc.get("address_line_2"), loc.get("suite"))
+                city  = _first_nonempty(loc.get("city"), loc.get("addressLocality"))
+                state = _first_nonempty(loc.get("state"), loc.get("addressRegion"))
+                zipc  = _first_nonempty(loc.get("zip"), loc.get("postalCode"))
+                parts = [line1, line2, city, state, zipc]
+                compact = " ".join([p for p in parts if p])
+                address = compact.strip()
+
+            phone = _first_nonempty(
+                loc.get('phone'),
+                loc.get('telephone'),
+                loc.get('contact_number'),
+                loc.get('phoneNumber'),
+            )
+
+            email = _first_nonempty(
+                loc.get('email'),
+                loc.get('contact_email'),
+                loc.get('emailAddress'),
+            )
+
+            hours = _first_nonempty(
+                loc.get('hours'),
+                loc.get('openingHours'),
+                loc.get('opening_hours'),
+                loc.get('business_hours'),
+            )
+
+            website = _first_nonempty(
+                loc.get('website'),
+                loc.get('url'),
+                loc.get('homepage'),
+            )
+
+            # Social links (array or comma-separated)
+            socials = _as_list(loc.get("sameAs") or loc.get("same_as") or loc.get("social") or loc.get("social_links"))
+
+            # Map handling
+            map_embed = _first_nonempty(loc.get('map_embed_url'), loc.get('map'))
+            gmaps_url = _first_nonempty(loc.get('google_maps_url'), loc.get('maps_url'))
+            map_src = _map_embed_src(address, map_embed or gmaps_url)
+
+            # If literally nothing but name/phone, still render but log a hint
+            if not any([address, phone, email, hours, website, map_src, socials]):
+                print(f"ℹ️ Sparse location data in {file} — consider adding address/email/hours/website/maps_url.")
+            
+            # --- HTML block ---
+            block = f"""
+            <div class="card">
+                <h3>{escape_html(name)}</h3>
+                {f'<p><strong>Address:</strong> {escape_html(address)}</p>' if address else ''}
+                {f'<p><strong>Phone:</strong> {escape_html(phone)}</p>' if phone else ''}
+                {f'<p><strong>Email:</strong> <a href="mailto:{escape_html(email)}">{escape_html(email)}</a></p>' if email else ''}
+                {f'<p><strong>Hours:</strong> {escape_html(hours)}</p>' if hours else ''}
+                {f'<p><strong>Website:</strong> <a href="{escape_html(website)}" target="_blank" rel="nofollow">{escape_html(website)}</a></p>' if website else ''}
+            """
+
+            if socials:
+                block += "<p><strong>Find us:</strong> " + " • ".join(
+                    f'<a href="{escape_html(s)}" target="_blank" rel="nofollow">{escape_html(s)}</a>' for s in socials[:6]
+                ) + "</p>"
+
+            if map_src:
+                block += f"""
+                <div style="margin-top: 1rem;">
+                    <iframe src="{escape_html(map_src)}" width="100%" height="320"
+                            style="border:0; border-radius: 8px;" allowfullscreen loading="lazy"></iframe>
+                </div>
                 """
-                if map_url:
-                    item_html += f'''
-                    <div style="margin-top: 1rem;">
-                        <iframe src="{escape_html(map_url)}" width="100%" height="300" style="border:0; border-radius: 8px;" allowfullscreen loading="lazy"></iframe>
-                    </div>
-                    '''
-                item_html += "</div>"
-                items.append(item_html)
+
+            block += "</div>"
+            items.append(block)
+            rendered += 1
 
     if not items:
-        print("⚠️ No valid locations found — skipping contact.html")
+        print(f"⚠️ No usable location records found ({files_seen} files scanned, {records_seen} records). Skipping contact.html")
         return False
 
+    # Page intro + aggregate contacts (first non-empty phone/email as top-level quick contact)
+    top_phone = top_email = ""
+    # quick scan through already-parsed items is hard; rescan quickly from files for first values
+    for file in sorted(os.listdir(locations_dir)):
+        if not file.lower().endswith((".json", ".yaml", ".yml")):
+            continue
+        data = load_data(os.path.join(locations_dir, file)) or []
+        for loc in (data if isinstance(data, list) else [data]):
+            if not isinstance(loc, dict):
+                continue
+            if not top_phone:
+                top_phone = _first_nonempty(loc.get('phone'), loc.get('telephone'))
+            if not top_email:
+                top_email = _first_nonempty(loc.get('email'), loc.get('contact_email'))
+            if top_phone and top_email:
+                break
+        if top_phone and top_email:
+            break
+
+    intro = "<p>We’d love to hear from you. Reach out using the details below or visit us at our offices.</p>"
+    if top_phone or top_email:
+        intro += "<div class='card'><h2>Quick Contact</h2>"
+        if top_phone: intro += f"<p><strong>Phone:</strong> {escape_html(top_phone)}</p>"
+        if top_email: intro += f'<p><strong>Email:</strong> <a href="mailto:{escape_html(top_email)}">{escape_html(top_email)}</a></p>'
+        intro += "</div>"
+
+    content = intro + "".join(items)
     with open("contact.html", "w", encoding="utf-8") as f:
-        f.write(generate_page("Contact Us", "".join(items)))
-    print(f"✅ contact.html generated ({len(items)} locations)")
+        f.write(generate_page("Contact Us", content))
+
+    print(f"✅ contact.html generated with {rendered} location card(s) from {files_seen} file(s)")
     return True
 
 def generate_services_page():
