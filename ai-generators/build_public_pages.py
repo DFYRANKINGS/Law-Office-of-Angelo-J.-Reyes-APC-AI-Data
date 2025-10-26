@@ -50,6 +50,84 @@ def load_data(filepath):
     print(f"⚠️ Unsupported file type: {filepath}")
     return []
 
+import math
+
+def _first_nonempty(*vals):
+    for v in vals:
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+def _title_from_filename(path):
+    base = os.path.splitext(os.path.basename(path))[0]
+    # prettify: "room-additions_pro" -> "Room Additions Pro"
+    return base.replace("-", " ").replace("_", " ").strip().title()
+
+def _is_placeholder_title(text):
+    if not isinstance(text, str) or not text.strip():
+        return True
+    t = text.strip().lower()
+    # common placeholders seen in spreadsheets/exports
+    return (
+        t in {"service", "unnamed service", "untitled", "n/a", "na", "tbd"} or
+        bool(re.fullmatch(r"(service|item|entry)\s*\d+", t))  # e.g., "service 1"
+    )
+
+def _guess_description(obj):
+    return _first_nonempty(
+        obj.get("description"),
+        obj.get("summary"),
+        obj.get("details"),
+        obj.get("body"),
+        obj.get("content"),
+        obj.get("answer"),
+        obj.get("copy"),
+    ) or ""
+
+def _guess_price(obj):
+    return _first_nonempty(
+        obj.get("price"),
+        obj.get("price_range"),
+        obj.get("starting_price"),
+        obj.get("min_price"),
+        obj.get("cost"),
+        obj.get("fee"),
+    ) or "Contact for pricing"
+
+def _as_list(val):
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str) and val.strip():
+        # allow comma-separated strings
+        return [x.strip() for x in val.split(",") if x.strip()]
+    return []
+
+def _bullet_points(obj):
+    """Try to produce a few crisp bullets from common fields."""
+    feats = _as_list(obj.get("features") or obj.get("benefits") or obj.get("highlights"))
+    specs = _as_list(obj.get("specialties") or obj.get("capabilities"))
+    areas = _as_list(obj.get("service_areas") or obj.get("areas") or obj.get("locations_served"))
+    bullets = []
+
+    for f in feats[:3]:
+        bullets.append(f"{f}")
+    if not bullets:
+        for s in specs[:3]:
+            bullets.append(f"{s}")
+    if areas:
+        bullets.append("Service areas: " + ", ".join(areas[:5]))
+
+    # de-dupe while preserving order
+    seen = set()
+    uniq = []
+    for b in bullets:
+        if b.lower() not in seen:
+            uniq.append(b)
+            seen.add(b.lower())
+    return uniq[:4]
+
 # -------------------------
 # Branding / meta driven by entity_name
 # -------------------------
@@ -264,19 +342,14 @@ def generate_contact_page():
     return True
 
 def generate_services_page():
-    services_dir = "schemas/services"  # ✅ lowercase
+    services_dir = "schemas/services"
     print(f"🔍 Checking services data in: {services_dir}")
     if not os.path.exists(services_dir):
         print(f"❌ Services directory not found: {services_dir} — skipping services.html")
         return False
 
-    def _title_from_filename(path):
-        base = os.path.splitext(os.path.basename(path))[0]
-        return base.replace("-", " ").replace("_", " ").strip().title()
-
     def _guess_title(obj, filename):
-        # Prefer explicit service fields, then generic, then filename
-        return _first_nonempty(
+        candidate = _first_nonempty(
             obj.get("title"),
             obj.get("service_name"),
             obj.get("name"),
@@ -288,31 +361,19 @@ def generate_services_page():
             obj.get("subtype"),
             obj.get("type"),
             obj.get("label"),
-        ) or _title_from_filename(filename)
-
-    def _guess_description(obj):
-        return _first_nonempty(
-            obj.get("description"),
-            obj.get("summary"),
-            obj.get("details"),
-            obj.get("body"),
-            obj.get("content"),
-            obj.get("answer"),
-        ) or ""
-
-    def _guess_price(obj):
-        return _first_nonempty(
-            obj.get("price"),
-            obj.get("price_range"),
-            obj.get("starting_price"),
-            obj.get("min_price"),
-            obj.get("cost"),
-            obj.get("fee"),
-        ) or "Contact for pricing"
+        )
+        if _is_placeholder_title(candidate):
+            # Try keywords as a better title
+            kws = _as_list(obj.get("keywords"))
+            if kws:
+                candidate = " / ".join(kws[:2]).title()
+        if _is_placeholder_title(candidate):
+            candidate = _title_from_filename(filename)
+        return candidate
 
     items = []
-    unnamed_fallbacks = 0
     files_processed = 0
+    placeholders_fixed = 0
 
     for file in sorted(os.listdir(services_dir)):
         if not file.endswith((".json", ".yaml", ".yml")):
@@ -336,20 +397,27 @@ def generate_services_page():
             if not isinstance(svc, dict):
                 continue
 
+            title_before = _first_nonempty(svc.get("title"), svc.get("service_name"), svc.get("name"))
             title = _guess_title(svc, filepath)
-            if title == _title_from_filename(filepath):
-                unnamed_fallbacks += 1  # we had to fallback to filename
+            if _is_placeholder_title(title_before) and not _is_placeholder_title(title):
+                placeholders_fixed += 1
 
             description = _guess_description(svc)
             price = _guess_price(svc)
             featured = bool(svc.get("featured") or svc.get("is_featured"))
             slug = svc.get("slug") or slugify(title)
             badge = '<span class="badge">Featured</span>' if featured else ''
+            bullets = _bullet_points(svc)
+
+            bullet_html = ""
+            if bullets:
+                bullet_html = "<ul>" + "".join(f"<li>{escape_html(b)}</li>" for b in bullets) + "</ul>"
 
             items.append(f"""
             <div class="card" id="{escape_html(slug)}">
                 <h2>{escape_html(title)} {badge}</h2>
                 {'<p>' + escape_html(description) + '</p>' if description else ''}
+                {bullet_html}
                 <p><strong>Starting at:</strong> {escape_html(price)}</p>
                 <a href="#{slug}" style="display: inline-block; margin-top: 1rem;">🔗 Permalink</a>
             </div>
@@ -362,11 +430,8 @@ def generate_services_page():
     with open("services.html", "w", encoding="utf-8") as f:
         f.write(generate_page("Our Services", "".join(items)))
 
-    # Gentle heads-up if we had to fall back
-    if unnamed_fallbacks:
-        print(f"ℹ️ {unnamed_fallbacks} service(s) were titled from filenames because no explicit title fields were found.")
-        print("   Tip: add one of these keys to each service: title | service_name | name | headline | service | offering")
-
+    if placeholders_fixed:
+        print(f"✨ Polished {placeholders_fixed} placeholder service title(s).")
     print(f"✅ services.html generated ({len(items)} services from {files_processed} file(s))")
     return True
 
@@ -466,7 +531,7 @@ def generate_index_page():
     return True
 
 def generate_about_page():
-    # 1) Try common org directories (any one will do)
+    # Locate org file (if any)
     candidate_dirs = [
         "schemas/organization",
         "schemas/organizations",
@@ -479,7 +544,6 @@ def generate_about_page():
     org = None
     picked_path = None
     if org_dir:
-        # Load first JSON/YAML/YML we find
         cand = [f for f in os.listdir(org_dir) if f.endswith(('.json', '.yaml', '.yml'))]
         if cand:
             picked_path = os.path.join(org_dir, cand[0])
@@ -487,88 +551,141 @@ def generate_about_page():
             if data:
                 org = data[0] if isinstance(data, list) else data
 
-    # 2) Optional: pull a location for fallback address/phone/email
-    loc_name = loc_address = loc_phone = loc_email = ""
+    # Gather summary from other schemas
+    services_dir = "schemas/services"
     locations_dir = "schemas/locations"
-    if os.path.isdir(locations_dir):
-        loc_files = [f for f in os.listdir(locations_dir) if f.endswith(('.json', '.yaml', '.yml'))]
-        if loc_files:
-            loc_data = load_data(os.path.join(locations_dir, loc_files[0]))
-            if loc_data:
-                loc = loc_data[0] if isinstance(loc_data, list) else loc_data
-                loc_name = (loc.get("name") or loc.get("location_name") or "")
-                loc_address = loc.get("address") or ""
-                loc_phone = loc.get("phone") or ""
-                loc_email = loc.get("email") or ""
+    reviews_dir = "schemas/reviews"
 
-    # 3) If no org file, build a minimal object so we still generate about.html
+    # Count services
+    service_titles = []
+    if os.path.isdir(services_dir):
+        for file in os.listdir(services_dir):
+            if not file.endswith((".json", ".yaml", ".yml")):
+                continue
+            for rec in (load_data(os.path.join(services_dir, file)) or []):
+                if isinstance(rec, dict) and isinstance(rec.get("services"), list):
+                    for s in rec["services"]:
+                        if isinstance(s, dict):
+                            title = _first_nonempty(s.get("title"), s.get("service_name"), s.get("name"))
+                            if _is_placeholder_title(title):
+                                title = None
+                            service_titles.append(title or _title_from_filename(file))
+                elif isinstance(rec, dict):
+                    title = _first_nonempty(rec.get("title"), rec.get("service_name"), rec.get("name"))
+                    if _is_placeholder_title(title):
+                        title = None
+                    service_titles.append(title or _title_from_filename(file))
+    service_count = len(service_titles)
+
+    # Locations / service areas
+    service_areas = set()
+    phone = email = ""
+    if os.path.isdir(locations_dir):
+        for file in os.listdir(locations_dir):
+            if not file.endswith((".json", ".yaml", ".yml")):
+                continue
+            for loc in (load_data(os.path.join(locations_dir, file)) or []):
+                if not isinstance(loc, dict):
+                    continue
+                for area in _as_list(loc.get("service_areas") or loc.get("areas")):
+                    service_areas.add(area)
+                if not phone:
+                    phone = loc.get("phone") or ""
+                if not email:
+                    email = loc.get("email") or ""
+
+    # Reviews: average rating
+    ratings = []
+    if os.path.isdir(reviews_dir):
+        for file in os.listdir(reviews_dir):
+            if not file.endswith((".json", ".yaml", ".yml")):
+                continue
+            for rev in (load_data(os.path.join(reviews_dir, file)) or []):
+                if isinstance(rev, dict):
+                    try:
+                        r = float(rev.get("rating"))
+                        if r > 0:
+                            ratings.append(r)
+                    except Exception:
+                        pass
+    avg_rating = (sum(ratings) / len(ratings)) if ratings else None
+
+    # Build an org fallback if missing
     if not org:
         repo_slug = os.getenv("GITHUB_REPOSITORY") or ""
         fallback_name = repo_slug.split("/", 1)[-1].replace("-", " ").title() if repo_slug else "Our Company"
         org = {
-            "entity_name": fallback_name,  # prefer entity_name
+            "entity_name": fallback_name,
             "name": fallback_name,
-            "description": "This page was auto-generated from the repository’s structured data. Update your organization file under schemas/organization/ to enrich this section.",
+            "description": "",
             "mission": "",
             "vision": "",
             "logo_url": "",
             "website": "",
         }
 
-    # 4) Build the page
+    # Compose page
     parts = []
 
     # Header/logo
-    name = _first_nonempty(org.get("entity_name"), org.get("name")) or "About Us"
+    display_name = _first_nonempty(org.get("entity_name"), org.get("name")) or "About Us"
     logo_url = _first_nonempty(org.get("logo_url"), org.get("logo"))
     if logo_url:
-        parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(name)}" style="max-height: 120px; margin-bottom: 2rem;">')
+        parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(display_name)}" style="max-height: 120px; margin-bottom: 2rem;">')
 
     # Description / mission / vision
-    if org.get("description"):
-        parts.append(f"<p>{escape_html(org.get('description'))}</p>")
+    desc = _first_nonempty(org.get("description"))
+    if not desc:
+        # synthesize a short intro
+        desc = f"{display_name} is a professional firm serving our community with high-quality services and a client-first approach."
+    parts.append(f"<p>{escape_html(desc)}</p>")
+
+    facts = []
+    facts.append(f"<strong>Services offered:</strong> {service_count}")
+    if avg_rating is not None:
+        stars = "★" * int(round(avg_rating)) + "☆" * (5 - int(round(avg_rating)))
+        facts.append(f"<strong>Average rating:</strong> {avg_rating:.1f} {stars}")
+    if service_areas:
+        facts.append(f"<strong>Service areas:</strong> {escape_html(', '.join(sorted(list(service_areas))[:8]))}")
+    if phone:
+        facts.append(f"<strong>Phone:</strong> {escape_html(phone)}")
+    if email:
+        facts.append(f'<strong>Email:</strong> <a href="mailto:{escape_html(email)}">{escape_html(email)}</a>')
+
+    parts.append('<div class="card"><h2>Facts at a Glance</h2><ul>' +
+                 "".join(f"<li>{row}</li>" for row in facts) + "</ul></div>")
+
     if org.get("mission"):
         parts.append(f"<h2>Our Mission</h2><p>{escape_html(org.get('mission'))}</p>")
     if org.get("vision"):
         parts.append(f"<h2>Our Vision</h2><p>{escape_html(org.get('vision'))}</p>")
 
-    # Website / sameAs
-    website = org.get("website") or org.get("url") or ""
-    same_as = org.get("sameAs") or org.get("same_as") or []
+    website = _first_nonempty(org.get("website"), org.get("url"))
+    same_as = _as_list(org.get("sameAs") or org.get("same_as"))
     if website or same_as:
         links = []
         if website:
             links.append(f'<li><a href="{escape_html(website)}" target="_blank" rel="nofollow">Website</a></li>')
-        if isinstance(same_as, list):
-            for s in same_as[:12]:
-                links.append(f'<li><a href="{escape_html(s)}" target="_blank" rel="nofollow">{escape_html(s)}</a></li>')
-        if links:
-            parts.append("<h2>Links</h2><ul>" + "".join(links) + "</ul>")
+        for s in same_as[:12]:
+            links.append(f'<li><a href="{escape_html(s)}" target="_blank" rel="nofollow">{escape_html(s)}</a></li>')
+        parts.append("<h2>Links</h2><ul>" + "".join(links) + "</ul>")
 
-    # Contact (from location fallback if org doesn’t include it)
-    has_contact = any([loc_address, loc_phone, loc_email])
-    if has_contact:
-        parts.append("<h2>Contact</h2>")
-        if loc_name:
-            parts.append(f"<p><strong>{escape_html(loc_name)}</strong></p>")
-        if loc_address:
-            parts.append(f"<p>{escape_html(loc_address)}</p>")
-        if loc_phone:
-            parts.append(f"<p>Phone: {escape_html(loc_phone)}</p>")
-        if loc_email:
-            parts.append(f'<p>Email: <a href="mailto:{escape_html(loc_email)}">{escape_html(loc_email)}</a></p>')
-
-    # If still nothing meaningful, add a friendly note
-    if not parts:
-        parts.append("<p>We’re preparing more details for this page. Check back soon.</p>")
+    # Simple CTA
+    parts.append(f"""
+    <div class="card">
+        <h2>Ready to Talk?</h2>
+        <p>Have a project in mind or need guidance? We’re here to help.</p>
+        <p><a href="contact.html">Contact us</a> to get started.</p>
+    </div>
+    """)
 
     with open("about.html", "w", encoding="utf-8") as f:
-        f.write(generate_page(name, "\n".join(parts)))
+        f.write(generate_page(display_name, "\n".join(parts)))
 
     if picked_path:
         print(f"✅ about.html generated from {picked_path}")
     else:
-        print("✅ about.html generated from fallback data (no org file found)")
+        print("✅ about.html generated from synthesized data")
     return True
 
 def generate_faq_page():
