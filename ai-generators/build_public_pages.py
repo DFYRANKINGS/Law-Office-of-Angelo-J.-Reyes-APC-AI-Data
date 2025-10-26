@@ -23,8 +23,9 @@ def slugify(text):
     return text or "item"
 
 def load_data(filepath):
-    if not os.path.exists(filepath):
-        print(f"🔍 File not found: {filepath}")
+    if not filepath or not os.path.exists(filepath):
+        if filepath:
+            print(f"🔍 File not found: {filepath}")
         return []
 
     try:
@@ -49,6 +50,109 @@ def load_data(filepath):
     print(f"⚠️ Unsupported file type: {filepath}")
     return []
 
+# -------------------------
+# Branding / meta driven by entity_name
+# -------------------------
+def _first_nonempty(*vals):
+    for v in vals:
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+def _load_first_yaml_json(path_glob):
+    import glob
+    for p in glob.glob(path_glob):
+        if os.path.isfile(p) and p.lower().endswith((".json", ".yaml", ".yml")):
+            data = load_data(p)
+            if data:
+                return data[0] if isinstance(data, list) else data
+    return None
+
+def _discover_entity_name_from_other_schemas():
+    # Try common places where entity_name might appear
+    probes = [
+        "schemas/organization/*.*",
+        "schemas/organizations/*.*",
+        "schemas/company/*.*",
+        "schemas/entity/*.*",
+        "schemas/business/*.*",
+        "schemas/reviews/*.*",
+        "schemas/services/*.*",
+        "schemas/locations/*.*",
+    ]
+    for pat in probes:
+        obj = _load_first_yaml_json(pat)
+        if not obj or not isinstance(obj, dict):
+            continue
+        candidate = _first_nonempty(
+            obj.get("entity_name"),
+            obj.get("name"),
+            obj.get("legal_name"),
+            obj.get("brand"),
+            obj.get("company"),
+            obj.get("organization"),
+            obj.get("site_title"),
+        )
+        if candidate:
+            return candidate
+    return None
+
+def load_org_meta():
+    """
+    Returns a dict with site-level branding pulled from schemas.
+    Prefers 'entity_name' and falls back intelligently.
+    {
+      "name": <entity_name/name/etc>,
+      "favicon": <path or url or None>,
+      "logo": <path or url or None>
+    }
+    """
+    meta = {"name": None, "favicon": None, "logo": None}
+
+    # 1) Look for an org file in common dirs
+    candidate_dirs = [
+        "schemas/organization", "schemas/organizations",
+        "schemas/company", "schemas/entity", "schemas/business",
+    ]
+    import glob
+    org_file = None
+    for d in candidate_dirs:
+        if os.path.isdir(d):
+            cand = [p for p in glob.glob(os.path.join(d, "*.*")) if p.lower().endswith((".json",".yaml",".yml"))]
+            if cand:
+                org_file = cand[0]
+                break
+
+    org = None
+    if org_file:
+        data = load_data(org_file)
+        org = data[0] if isinstance(data, list) else data
+
+    if isinstance(org, dict):
+        meta["name"] = _first_nonempty(
+            org.get("entity_name"),
+            org.get("name"),
+            org.get("legal_name"),
+            org.get("brand"),
+            org.get("site_title"),
+        )
+        meta["logo"] = _first_nonempty(org.get("logo_url"), org.get("logo"))
+        meta["favicon"] = _first_nonempty(org.get("favicon"), org.get("favicon_url"))
+
+    # 2) If still no name, probe other schema folders
+    if not meta["name"]:
+        meta["name"] = _discover_entity_name_from_other_schemas()
+
+    # 3) Last resort: derive name from repo slug
+    if not meta["name"]:
+        repo_slug = os.getenv("GITHUB_REPOSITORY") or ""
+        meta["name"] = repo_slug.split("/", 1)[-1].replace("-", " ").title() if repo_slug else "Site"
+
+    return meta
+
+# -------------------------
+# HTML shells
+# -------------------------
 def generate_nav():
     return """
     <nav style="background: #2c3e50; padding: 1rem; margin-bottom: 2rem;">
@@ -65,12 +169,26 @@ def generate_nav():
     """
 
 def generate_page(title, content):
+    # Use entity-driven branding for the <title> and favicon
+    org = load_org_meta()
+    site_name = org.get("name") or "Site"
+    page_title = f"{escape_html(site_name)} — {escape_html(title)}" if title else escape_html(site_name)
+    favicon_href = org.get("favicon") or "favicon.ico"
+    theme_color = "#2c3e50"
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>{escape_html(title)}</title>
+    <title>{page_title}</title>
+    <meta name="application-name" content="{escape_html(site_name)}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="{theme_color}">
+    <link rel="icon" href="{escape_html(favicon_href)}">
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+    <link rel="manifest" href="site.webmanifest">
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.7; }}
         h1, h2, h3 {{ color: #2c3e50; }}
@@ -85,7 +203,7 @@ def generate_page(title, content):
 <body>
     {generate_nav()}
     <div class="page-header">
-        <h1>{escape_html(title)}</h1>
+        <h1>{escape_html(title or site_name)}</h1>
     </div>
     {content}
     <footer style="margin-top: 4rem; padding-top: 2rem; border-top: 1px solid #eee; text-align: center; color: #7f8c8d;">
@@ -226,7 +344,7 @@ def generate_testimonials_page():
     return True
 
 def generate_index_page():
-    """Generate directory + welcome page — DYNAMIC REPO URL"""
+    """Generate directory + welcome page — DYNAMIC REPO URL + entity_name title"""
     links = [
         ("About Us", "about.html"),
         ("Our Services", "services.html"),
@@ -259,6 +377,7 @@ def generate_index_page():
                 display_path = filepath.replace("schemas/", "")
                 file_links.append(f'<li><a href="{full_url}" target="_blank">{escape_html(display_path)}</a></li>')
 
+    # Content
     content = f"""
     <p>Welcome to our AI-optimized data hub. Below are quick links to key sections, or browse all machine-readable files.</p>
     <h2>🚀 Quick Navigation</h2>
@@ -271,8 +390,10 @@ def generate_index_page():
     </ul>
     """
 
+    # Use entity-driven site name for the page title
+    site_title = load_org_meta().get("name") or "Home"
     with open("index.html", "w", encoding="utf-8") as f:
-        f.write(generate_page("Welcome", content))
+        f.write(generate_page(site_title, content))
     print("✅ index.html generated")
     return True
 
@@ -317,6 +438,7 @@ def generate_about_page():
         repo_slug = os.getenv("GITHUB_REPOSITORY") or ""
         fallback_name = repo_slug.split("/", 1)[-1].replace("-", " ").title() if repo_slug else "Our Company"
         org = {
+            "entity_name": fallback_name,  # prefer entity_name
             "name": fallback_name,
             "description": "This page was auto-generated from the repository’s structured data. Update your organization file under schemas/organization/ to enrich this section.",
             "mission": "",
@@ -329,8 +451,8 @@ def generate_about_page():
     parts = []
 
     # Header/logo
-    name = org.get("name") or "About Us"
-    logo_url = org.get("logo_url") or org.get("logo") or ""
+    name = _first_nonempty(org.get("entity_name"), org.get("name")) or "About Us"
+    logo_url = _first_nonempty(org.get("logo_url"), org.get("logo"))
     if logo_url:
         parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(name)}" style="max-height: 120px; margin-bottom: 2rem;">')
 
@@ -373,7 +495,7 @@ def generate_about_page():
         parts.append("<p>We’re preparing more details for this page. Check back soon.</p>")
 
     with open("about.html", "w", encoding="utf-8") as f:
-        f.write(generate_page(org.get("name") or "About Us", "\n".join(parts)))
+        f.write(generate_page(name, "\n".join(parts)))
 
     if picked_path:
         print(f"✅ about.html generated from {picked_path}")
