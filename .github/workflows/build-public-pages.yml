@@ -1,62 +1,62 @@
-name: 🏗️ Build Public HTML Pages
+name: Build public pages & sitemaps
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
     paths:
-      - 'schemas/**'
-      - 'ai-generators/build_public_pages.py'
+      - 'schemas/**'           # run when schema files change
+      - 'ai-generators/**'     # or when the page builder changes
+      - 'generate_sitemaps.py' # or when the sitemap script changes
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build-public-pages:
+  build-pages-and-sitemaps:
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          token: ${{ secrets.GH_TOKEN }}  # 👈 Use GH_TOKEN for full write access
+          python-version: '3.11'
 
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: 📦 Install dependencies
+      - name: Install deps
         run: |
-          pip install pandas pyyaml
+          python -m pip install --upgrade pip
+          pip install pyyaml
 
-      - name: 🖨️ Generate public HTML pages
+      - name: Build public pages
+        run: python ai-generators/build_public_pages.py
+
+      - name: Commit pages
         run: |
-          # Stay in root — run script using full path to avoid CWD issues
-          python ai-generators/build_public_pages.py
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html about.html services.html testimonials.html faqs.html help.html contact.html .nojekyll
+          git commit -m "AUTO: Build public pages" || echo "No page changes to commit"
+          git push
 
-      - name: 🔐 Authenticate Git for Push
+      - name: Generate sitemaps
+        # --include-all-html also picks up any extra *.html at repo root
+        run: python generate_sitemaps.py --include-all-html
+
+      - name: Commit sitemaps
         run: |
-          git config --local user.name "GitHub Action"
-          git config --local user.email "action@github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git
-          echo "✅ Git authenticated and remote URL updated"
+          git add sitemap.xml ai-sitemap.xml
+          git commit -m "AUTO: Update sitemaps" || echo "No sitemap changes to commit"
+          git push
 
-      - name: 💾 Commit and push generated files (if any)
+      # Optional: ping search engines right here (or keep your auto-ping workflow)
+      - name: Ping search engines (optional inline)
+        if: always()
         run: |
-          FILES_TO_ADD=""
-          for f in help.html faqs.html services.html testimonials.html contact.html about.html index.html; do
-            if [ -f "$f" ]; then
-              FILES_TO_ADD="$FILES_TO_ADD $f"
-              echo "✅ Found $f — will commit"
-            else
-              echo "⚠️ $f not found — skipping"
-            fi
-          done
-
-          if [ -n "$FILES_TO_ADD" ]; then
-            git add $FILES_TO_ADD
-            git commit -m "AUTO: Update public HTML pages" || echo "✅ No changes, still pushing"
-            git push origin ${{ github.ref_name }}
-            echo "🚀 Successfully pushed updated pages"
-          else
-            echo "❌ No HTML files to commit. Check earlier logs for errors."
-            exit 1
-          fi
+          # If you use a CNAME file, generate_sitemaps.py used it. Otherwise this is project pages URL:
+          OWNER_REPO="${{ github.repository }}"
+          OWNER="${OWNER_REPO%/*}"
+          REPO="${OWNER_REPO#*/}"
+          BASE="https://${OWNER}.github.io/${REPO}"
+          curl -sS "https://www.google.com/ping?sitemap=${BASE}/sitemap.xml" || true
+          curl -sS "https://www.bing.com/ping?sitemap=${BASE}/sitemap.xml" || true
