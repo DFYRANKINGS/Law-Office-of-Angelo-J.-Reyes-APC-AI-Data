@@ -72,30 +72,30 @@ jobs:
             fi
           done <<< "${{ env.changed_xlsx }}"
 
-      - name: FORCE CREATE DUMMY FILES IN ALL DIRECTORIES (ENSURE GIT TRACKS THEM)
+      - name: Ensure schemas/ Directories Exist
         run: |
-          mkdir -p schema-files/organization
-          mkdir -p schema-files/services
-          mkdir -p schema-files/products
-          mkdir -p schema-files/faqs
-          mkdir -p schema-files/help-articles
-          mkdir -p schema-files/reviews
-          mkdir -p schema-files/locations
-          mkdir -p schema-files/team
-          mkdir -p schema-files/awards
-          mkdir -p schema-files/press
-          mkdir -p schema-files/case-studies
-          touch schema-files/organization/.gitkeep
-          touch schema-files/services/.gitkeep
-          touch schema-files/products/.gitkeep
-          touch schema-files/faqs/.gitkeep
-          touch schema-files/help-articles/.gitkeep
-          touch schema-files/reviews/.gitkeep
-          touch schema-files/locations/.gitkeep
-          touch schema-files/team/.gitkeep
-          touch schema-files/awards/.gitkeep
-          touch schema-files/press/.gitkeep
-          touch schema-files/case-studies/.gitkeep
+          mkdir -p schemas/organization
+          mkdir -p schemas/services
+          mkdir -p schemas/products
+          mkdir -p schemas/faqs
+          mkdir -p schemas/help-articles
+          mkdir -p schemas/reviews
+          mkdir -p schemas/locations
+          mkdir -p schemas/team
+          mkdir -p schemas/awards
+          mkdir -p schemas/press
+          mkdir -p schemas/case-studies
+          touch schemas/organization/.gitkeep
+          touch schemas/services/.gitkeep
+          touch schemas/products/.gitkeep
+          touch schemas/faqs/.gitkeep
+          touch schemas/help-articles/.gitkeep
+          touch schemas/reviews/.gitkeep
+          touch schemas/locations/.gitkeep
+          touch schemas/team/.gitkeep
+          touch schemas/awards/.gitkeep
+          touch schemas/press/.gitkeep
+          touch schemas/case-studies/.gitkeep
 
       - name: Generate or Update Sitemap (FORCE UPDATE)
         run: |
@@ -135,4 +135,5 @@ jobs:
           git fetch origin ${{ github.ref_name }}
           git log -1 origin/${{ github.ref_name }} --oneline
           echo "✅ If commit above matches, SUCCESS! Files are live at Raw URLs."
+
 
