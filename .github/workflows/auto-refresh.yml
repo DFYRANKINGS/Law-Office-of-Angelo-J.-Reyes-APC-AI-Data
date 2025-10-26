@@ -1,9 +1,9 @@
-name: 🔄 Auto Refresh AI Files (Every 4 Weeks If Stale + Changed)
+name: "🔄 Auto Refresh AI Files (Every 4 Weeks If Stale + Changed)"
 
 on:
   schedule:
-    - cron: "0 4 * * 0"   # Every Sunday at 04:00 UTC
-  workflow_dispatch:       # Allow manual run
+    - cron: "0 4 * * 0"     # Every Sunday at 04:00 UTC
+  workflow_dispatch:         # Allow manual run
 
 permissions:
   contents: write
@@ -25,7 +25,12 @@ jobs:
 
       - name: 📦 Install Dependencies
         run: |
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            python -m pip install --upgrade pip
+            pip install pyyaml pandas openpyxl
+          fi
 
       - name: 🕰️ Check If Sitemap Is Older Than 28 Days
         id: check_stale
@@ -36,11 +41,11 @@ jobs:
             DIFF_DAYS=$(( (NOW - FILE_MTIME) / 86400 ))
             echo "📄 ai-sitemap.xml last modified $DIFF_DAYS days ago."
             if [ $DIFF_DAYS -ge 28 ]; then
-              echo "✅ File is stale — proceeding"
               echo "is_stale=true" >> $GITHUB_ENV
+              echo "✅ File is stale — proceeding"
             else
-              echo "❌ File is fresh — skipping auto-refresh"
               echo "is_stale=false" >> $GITHUB_ENV
+              echo "❌ File is fresh — skipping auto-refresh"
             fi
           else
             echo "⚠️ ai-sitemap.xml not found — treating as stale"
@@ -53,15 +58,28 @@ jobs:
           echo "✅ Skipping — recent activity detected."
           exit 0
 
+      # 1) Re-generate schema files from XLSX (adjust input path if needed)
       - name: 🗃️ Re-generate Schema Files
         run: |
           python ai-generators/generate_files_from_xlsx.py --input templates/AI-Visibility-Master-Template.xlsx
 
-      - name: 🗺️ Re-generate Sitemap
+      # 2) Build public HTML pages from schemas
+      - name: 🧱 Build Public Pages
         run: |
-          python generate_sitemaps.py
-          touch ai-sitemap.xml
+          python ai-generators/build_public_pages.py
 
+      # 3) Generate both sitemaps (HTML + AI) — include all root *.html
+      - name: 🗺️ Re-generate Sitemaps
+        run: |
+          python generate_sitemaps.py --include-all-html
+          # touch not needed; generate_sitemaps.py writes files explicitly
+
+      # 4) Generate robots.txt that adapts to repo/branch automatically
+      - name: 🤖 Generate robots.txt
+        run: |
+          python generate_robots.py
+
+      # 5) Detect changes across everything we just produced
       - name: 🧪 Detect Real Changes
         id: detect_changes
         run: |
@@ -74,27 +92,51 @@ jobs:
             echo "✅ No real changes — skipping commit and ping"
           fi
 
+      # 6) Commit once if there are changes (schemas, pages, sitemaps, robots)
       - name: 💾 Commit Only If Changed
         if: env.changes_detected == 'true'
         run: |
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "🔄 Auto-refresh: Content regenerated after 28+ days idle [$(date +'%Y-%m-%d')]"
-          git push origin main
+          git config --local user.name  "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "🔄 Auto-refresh: content regenerated after 28+ days idle ($(date +'%Y-%m-%d'))"
+          git push origin ${{ github.ref_name || 'main' }}
           echo "✅ Changes pushed"
 
-      - name: 🤖 Ping Search Engines (ONLY if changes committed)
-        if: env.changes_detected == 'true' && github.ref == 'refs/heads/main'
+      # 7) Ping search engines (only if we pushed changes)
+      - name: 📡 Ping Search Engines (ONLY if changes committed)
+        if: env.changes_detected == 'true'
         run: |
-          SITEMAP_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/ai-sitemap.xml"
-          echo "📡 Pinging search engines with sitemap: $SITEMAP_URL"
+          OWNER_REPO="${{ github.repository }}"
+          OWNER="${OWNER_REPO%/*}"
+          REPO="${OWNER_REPO#*/}"
+          BRANCH="${{ github.ref_name || 'main' }}"
 
-          echo "→ Notifying Google Search..."
-          curl -s -o /dev/null -w "%{http_code}\n" "http://google.com/ping?sitemap=$SITEMAP_URL" \
-            && echo "✅ Google ping successful" \
-            || echo "❌ Google ping failed (workflow continues)"
+          # Project Pages base: https://<owner>.github.io/<repo>
+          PAGES_BASE="https://${OWNER}.github.io/${REPO}"
 
-          echo "→ Notifying Bing + Copilot..."
-          curl -s -o /dev/null -w "%{http_code}\n" "http://www.bing.com/ping?sitemap=$SITEMAP_URL" \
-            && echo "✅ Bing ping successful" \
-            || echo "❌ Bing ping failed (workflow continues)"
+          # If CNAME exists, prefer it (generate_sitemaps.py uses it too)
+          if [ -f CNAME ]; then
+            HOST=$(cat CNAME | tr -d '\r' | sed 's#http://##; s#https://##' | tr -d '/')
+            if [ -n "$HOST" ]; then
+              PAGES_BASE="https://${HOST}"
+            fi
+          fi
+
+          PAGE_SITEMAP="${PAGES_BASE}/sitemap.xml"
+          AI_SITEMAP="https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/ai-sitemap.xml"
+
+          echo "📄 Page sitemap: ${PAGE_SITEMAP}"
+          echo "🤖 AI sitemap:   ${AI_SITEMAP}"
+
+          echo "→ Notifying Google (pages sitemap)..."
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.google.com/ping?sitemap=${PAGE_SITEMAP}" || true
+
+          echo "→ Notifying Bing (pages sitemap)..."
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.bing.com/ping?sitemap=${PAGE_SITEMAP}" || true
+
+          # Optional: some engines may also accept the AI sitemap URL; harmless to try
+          echo "→ (Optional) Notifying Google (AI sitemap)..."
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.google.com/ping?sitemap=${AI_SITEMAP}" || true
+
+          echo "→ (Optional) Notifying Bing (AI sitemap)..."
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.bing.com/ping?sitemap=${AI_SITEMAP}" || true
