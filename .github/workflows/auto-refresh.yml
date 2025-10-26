@@ -55,7 +55,7 @@ jobs:
 
       - name: 🗃️ Re-generate Schema Files
         run: |
-          python ai-generators/generate_files_from_xlsx.py --input templates/client-data.xlsx
+          python ai-generators/generate_files_from_xlsx.py --input templates/AI-Visibility-Master-Template.xlsx
 
       - name: 🗺️ Re-generate Sitemap
         run: |
