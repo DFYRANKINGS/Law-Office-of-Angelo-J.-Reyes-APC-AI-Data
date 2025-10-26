@@ -277,50 +277,108 @@ def generate_index_page():
     return True
 
 def generate_about_page():
-    org_dir = "schemas/organization"  # ✅ lowercase
-    print(f"🔍 Scanning {org_dir} for organization data...")
+    # 1) Try common org directories (any one will do)
+    candidate_dirs = [
+        "schemas/organization",
+        "schemas/organizations",
+        "schemas/company",
+        "schemas/entity",
+        "schemas/business",
+    ]
+    org_dir = next((d for d in candidate_dirs if os.path.isdir(d)), None)
 
-    if not os.path.exists(org_dir):
-        print(f"❌ Directory not found: {org_dir} — skipping about.html")
-        return False
+    org = None
+    picked_path = None
+    if org_dir:
+        # Load first JSON/YAML/YML we find
+        cand = [f for f in os.listdir(org_dir) if f.endswith(('.json', '.yaml', '.yml'))]
+        if cand:
+            picked_path = os.path.join(org_dir, cand[0])
+            data = load_data(picked_path)
+            if data:
+                org = data[0] if isinstance(data, list) else data
 
-    cand = [f for f in os.listdir(org_dir) if f.endswith(('.json', '.yaml', '.yml'))]
-    if not cand:
-        print(f"❌ No JSON/YAML files found in {org_dir} — skipping about.html")
-        return False
+    # 2) Optional: pull a location for fallback address/phone/email
+    loc_name = loc_address = loc_phone = loc_email = ""
+    locations_dir = "schemas/locations"
+    if os.path.isdir(locations_dir):
+        loc_files = [f for f in os.listdir(locations_dir) if f.endswith(('.json', '.yaml', '.yml'))]
+        if loc_files:
+            loc_data = load_data(os.path.join(locations_dir, loc_files[0]))
+            if loc_data:
+                loc = loc_data[0] if isinstance(loc_data, list) else loc_data
+                loc_name = (loc.get("name") or loc.get("location_name") or "")
+                loc_address = loc.get("address") or ""
+                loc_phone = loc.get("phone") or ""
+                loc_email = loc.get("email") or ""
 
-    filepath = os.path.join(org_dir, cand[0])
-    print(f"📄 Using: {os.path.basename(filepath)}")
+    # 3) If no org file, build a minimal object so we still generate about.html
+    if not org:
+        repo_slug = os.getenv("GITHUB_REPOSITORY") or ""
+        fallback_name = repo_slug.split("/", 1)[-1].replace("-", " ").title() if repo_slug else "Our Company"
+        org = {
+            "name": fallback_name,
+            "description": "This page was auto-generated from the repository’s structured data. Update your organization file under schemas/organization/ to enrich this section.",
+            "mission": "",
+            "vision": "",
+            "logo_url": "",
+            "website": "",
+        }
 
-    orgs = load_data(filepath)
-    if not orgs:
-        print(f"❌ Failed to load data — skipping about.html")
-        return False
+    # 4) Build the page
+    parts = []
 
-    org = orgs[0] if isinstance(orgs, list) else orgs
-
-    content_parts = []
-    logo_url = org.get('logo_url') or org.get('logo')
+    # Header/logo
+    name = org.get("name") or "About Us"
+    logo_url = org.get("logo_url") or org.get("logo") or ""
     if logo_url:
-        content_parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(org.get("name", "Company"))}" style="max-height: 120px; margin-bottom: 2rem;">')
+        parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(name)}" style="max-height: 120px; margin-bottom: 2rem;">')
 
-    if org.get('description'):
-        content_parts.append(f"<p>{escape_html(org.get('description'))}</p>")
-    if org.get('mission'):
-        content_parts.append(f"<h2>Our Mission</h2><p>{escape_html(org.get('mission'))}</p>")
-    if org.get('vision'):
-        content_parts.append(f"<h2>Our Vision</h2><p>{escape_html(org.get('vision'))}</p>")
-    if org.get('tagline') or org.get('slogan'):
-        content_parts.append(f"<h2>Our Promise</h2><p>{escape_html(org.get('tagline') or org.get('slogan'))}</p>")
+    # Description / mission / vision
+    if org.get("description"):
+        parts.append(f"<p>{escape_html(org.get('description'))}</p>")
+    if org.get("mission"):
+        parts.append(f"<h2>Our Mission</h2><p>{escape_html(org.get('mission'))}</p>")
+    if org.get("vision"):
+        parts.append(f"<h2>Our Vision</h2><p>{escape_html(org.get('vision'))}</p>")
 
-    if not content_parts:
-        print("⚠️ No usable fields found in org data — skipping about.html")
-        return False
+    # Website / sameAs
+    website = org.get("website") or org.get("url") or ""
+    same_as = org.get("sameAs") or org.get("same_as") or []
+    if website or same_as:
+        links = []
+        if website:
+            links.append(f'<li><a href="{escape_html(website)}" target="_blank" rel="nofollow">Website</a></li>')
+        if isinstance(same_as, list):
+            for s in same_as[:12]:
+                links.append(f'<li><a href="{escape_html(s)}" target="_blank" rel="nofollow">{escape_html(s)}</a></li>')
+        if links:
+            parts.append("<h2>Links</h2><ul>" + "".join(links) + "</ul>")
+
+    # Contact (from location fallback if org doesn’t include it)
+    has_contact = any([loc_address, loc_phone, loc_email])
+    if has_contact:
+        parts.append("<h2>Contact</h2>")
+        if loc_name:
+            parts.append(f"<p><strong>{escape_html(loc_name)}</strong></p>")
+        if loc_address:
+            parts.append(f"<p>{escape_html(loc_address)}</p>")
+        if loc_phone:
+            parts.append(f"<p>Phone: {escape_html(loc_phone)}</p>")
+        if loc_email:
+            parts.append(f'<p>Email: <a href="mailto:{escape_html(loc_email)}">{escape_html(loc_email)}</a></p>')
+
+    # If still nothing meaningful, add a friendly note
+    if not parts:
+        parts.append("<p>We’re preparing more details for this page. Check back soon.</p>")
 
     with open("about.html", "w", encoding="utf-8") as f:
-        f.write(generate_page("About Us", "\n".join(content_parts)))
+        f.write(generate_page(org.get("name") or "About Us", "\n".join(parts)))
 
-    print("✅ about.html generated successfully")
+    if picked_path:
+        print(f"✅ about.html generated from {picked_path}")
+    else:
+        print("✅ about.html generated from fallback data (no org file found)")
     return True
 
 def generate_faq_page():
