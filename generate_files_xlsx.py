@@ -6,9 +6,9 @@ import datetime
 import xml.etree.ElementTree as ET
 
 # ========= CONFIG =========
-DATA_FILE = "templates/client-data.xlsx"
-OUTPUT_DIR = "schema-files"
-SITE_BASE = "https://example.com"  # <-- CHANGE THIS to your live domain
+DATA_FILE = "templates/AI-Visibility-Master-Template.xlsx"
+OUTPUT_DIR = "schemas"
+SITE_BASE = "https://www.angeloreyeslaw.com"  # <-- CHANGE THIS to your live domain
 SITEMAP_FILE = "ai-sitemap.xml"
 # ==========================
 
