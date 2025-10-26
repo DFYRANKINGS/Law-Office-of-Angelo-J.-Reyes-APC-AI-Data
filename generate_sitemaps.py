@@ -70,6 +70,7 @@ def get_branch_name():
 
 def get_raw_base_url(repo_slug: str, ref: str) -> str:
     # raw URLs for files inside the repo (json/yaml/md/etc.)
+    # Later we append "/<path>", so no trailing slash here.
     return f"https://raw.githubusercontent.com/{repo_slug}/{quote(ref)}"
 
 def get_pages_base_url(repo_slug: str) -> str:
@@ -82,7 +83,6 @@ def get_pages_base_url(repo_slug: str) -> str:
         try:
             host = open(cname_path, "r", encoding="utf-8").read().strip()
             if host:
-                # ensure no protocol in file; script adds https://
                 host = host.replace("http://", "").replace("https://", "").strip("/")
                 return f"https://{host}"
         except Exception:
@@ -113,7 +113,6 @@ def find_generated_files(patterns=None):
     if paths:
         print("   e.g.", paths[:3])
     else:
-        # Light diagnostics to help if empty
         print("   (No matches found. Working dir:", os.getcwd(), ")")
         print("   schemas/ exists:", os.path.isdir("schemas"))
     return paths
@@ -141,16 +140,25 @@ def find_public_pages(extra_glob=False):
     return pages
 
 # ---------------------------
-# Sitemap writers
+# Sitemap writer (pretty-printed)
 # ---------------------------
+import xml.dom.minidom, io
+
 def write_sitemap(urls, out_file):
-    urlset = Element("urlset", attrib={"xmlns": "http://www.sitemaps.org/schemas/sitemap/0.9"})
+    urlset = Element("urlset", attrib={
+        "xmlns": "http://www.sitemaps.org/schemas/sitemap/0.9"
+    })
     now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     for u in urls:
         url_el = SubElement(urlset, "url")
         SubElement(url_el, "loc").text = u
         SubElement(url_el, "lastmod").text = now
-    ElementTree(urlset).write(out_file, encoding="utf-8", xml_declaration=True)
+
+    rough = io.BytesIO()
+    ElementTree(urlset).write(rough, encoding="utf-8", xml_declaration=True)
+    pretty = xml.dom.minidom.parseString(rough.getvalue()).toprettyxml(indent="  ")
+    with open(out_file, "w", encoding="utf-8") as outf:
+        outf.write(pretty)
     print(f"📝 Wrote {out_file} with {len(urls)} URL(s)")
 
 # ---------------------------
