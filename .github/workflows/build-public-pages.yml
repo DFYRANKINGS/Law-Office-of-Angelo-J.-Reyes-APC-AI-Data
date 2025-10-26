@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN }}  # 👈 Use GH_TOKEN for full write access
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v4
@@ -27,14 +29,18 @@ jobs:
 
       - name: 🖨️ Generate public HTML pages
         run: |
-          cd ai-generators
-          python build_public_pages.py
+          # Stay in root — run script using full path to avoid CWD issues
+          python ai-generators/build_public_pages.py
+
+      - name: 🔐 Authenticate Git for Push
+        run: |
+          git config --local user.name "GitHub Action"
+          git config --local user.email "action@github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git
+          echo "✅ Git authenticated and remote URL updated"
 
       - name: 💾 Commit and push generated files (if any)
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
           FILES_TO_ADD=""
           for f in help.html faqs.html services.html testimonials.html contact.html about.html index.html; do
             if [ -f "$f" ]; then
@@ -47,9 +53,8 @@ jobs:
 
           if [ -n "$FILES_TO_ADD" ]; then
             git add $FILES_TO_ADD
-            git commit -m "AUTO: Update public HTML pages"
-            # 🔑 USE GITHUB_TOKEN TO AUTHENTICATE PUSH
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
+            git commit -m "AUTO: Update public HTML pages" || echo "✅ No changes, still pushing"
+            git push origin ${{ github.ref_name }}
             echo "🚀 Successfully pushed updated pages"
           else
             echo "❌ No HTML files to commit. Check earlier logs for errors."
