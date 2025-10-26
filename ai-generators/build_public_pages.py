@@ -296,80 +296,75 @@ def generate_page(title, content):
 def generate_contact_page():
     """
     Builds contact.html from schemas/locations/*.{json,yaml,yml}
-    Handles flat and nested schema.org shapes:
-      - address: string OR {streetAddress, addressLocality, addressRegion, postalCode}
-      - phone/telephone under root OR under contactPoint
-      - email under root OR under contactPoint
-      - openingHours (string) OR openingHoursSpecification (list of dicts)
-      - google_maps_url/map_embed_url OR synthesize from address
-    Also accepts files that wrap locations under 'locations': [...]
-    Falls back to org-level contact if locations are sparse.
+    Now supports:
+      - address_street, address_city, address_state, address_postal_code
+      - geo_latitude, geo_longitude (prefer precise map from coords)
+      - all previous flat/nested schema.org shapes
     """
-    import io
-
     locations_dir = "schemas/locations"
     print(f"🔍 Checking contact data in: {locations_dir}")
     if not os.path.exists(locations_dir):
         print(f"❌ Locations directory not found: {locations_dir} — skipping contact.html")
         return False
 
-    # ---------- helpers ----------
     def _first_nonempty(*vals):
         for v in vals:
             if isinstance(v, str) and v.strip():
                 return v.strip()
+            if isinstance(v, (int, float)):  # e.g., postal code as number
+                return str(v)
             if isinstance(v, dict) and "@value" in v and isinstance(v["@value"], str) and v["@value"].strip():
                 return v["@value"].strip()
         return ""
 
     def _as_list(val):
         if val is None: return []
-        if isinstance(val, list): return val
+        if isinstance(val, list): return [str(x).strip() for x in val if str(x).strip()]
         if isinstance(val, str) and val.strip():
             return [s.strip() for s in val.split(",") if s.strip()]
         return []
 
-    def _get_nested(d, *keys):
-        """Return first found nested value from possible key paths."""
-        for path in keys:
-            cur = d
-            try:
-                for k in path:
-                    cur = cur[k]
-                if isinstance(cur, (str, dict, list)) and (cur or cur == 0):
-                    return cur
-            except Exception:
-                pass
-        return None
+    def _format_address_from_components(loc):
+        # NEW: explicit support for address_street/city/state/postal_code
+        line1 = _first_nonempty(
+            loc.get("address_street"),
+            loc.get("streetAddress"),
+            loc.get("address1"),
+            loc.get("address_line_1"),
+            loc.get("street"),
+        )
+        city  = _first_nonempty(loc.get("address_city"), loc.get("city"), loc.get("addressLocality"))
+        state = _first_nonempty(loc.get("address_state"), loc.get("state"), loc.get("addressRegion"))
+        zipc  = _first_nonempty(loc.get("address_postal_code"), loc.get("postalCode"), loc.get("zip"), loc.get("zipCode"))
+        line2 = _first_nonempty(loc.get("address2"), loc.get("address_line_2"), loc.get("suite"))
+        parts = [line1, line2, ", ".join([p for p in [city, state] if p]) if city or state else None, zipc]
+        return " ".join([p for p in parts if p]).strip()
 
-    def _format_address(addr):
-        """addr can be a string or a dict with schema.org PostalAddress fields."""
-        if not addr: return ""
-        if isinstance(addr, str): return addr.strip()
+    def _format_address(addr, loc):
+        """addr string or dict; else compose from components."""
+        if isinstance(addr, str) and addr.strip():
+            return addr.strip()
         if isinstance(addr, dict):
             line1 = _first_nonempty(addr.get("streetAddress"), addr.get("address1"), addr.get("addressLine1"))
             line2 = _first_nonempty(addr.get("address2"), addr.get("addressLine2"), addr.get("suite"))
             city  = _first_nonempty(addr.get("addressLocality"), addr.get("city"))
             state = _first_nonempty(addr.get("addressRegion"), addr.get("state"))
             zipc  = _first_nonempty(addr.get("postalCode"), addr.get("zip"), addr.get("zipCode"))
-            parts = [line1, line2, city, state, zipc]
+            parts = [line1, line2, ", ".join([p for p in [city, state] if p]) if city or state else None, zipc]
             return " ".join([p for p in parts if p]).strip()
-        return ""
+        # fallback: compose from the location object’s components
+        return _format_address_from_components(loc)
 
     def _extract_hours(loc):
-        # 1) Simple strings
         hours = _first_nonempty(loc.get("hours"), loc.get("openingHours"), loc.get("opening_hours"), loc.get("business_hours"))
         if hours:
             return hours
-
-        # 2) openingHoursSpecification: [{dayOfWeek, opens, closes}] variants
         spec = loc.get("openingHoursSpecification") or loc.get("opening_hours_specification")
         if isinstance(spec, list) and spec:
             rows = []
             for r in spec:
                 if not isinstance(r, dict): continue
                 day = _first_nonempty(r.get("dayOfWeek"), r.get("day"), r.get("weekday"))
-                # dayOfWeek might be list or string like "https://schema.org/Monday"
                 if isinstance(day, list) and day:
                     day = day[0]
                 if isinstance(day, str) and "/" in day:
@@ -382,52 +377,63 @@ def generate_contact_page():
                 return "; ".join(rows)
         return ""
 
-    def _extract_website(loc):
-        return _first_nonempty(loc.get("website"), loc.get("url"), loc.get("homepage"))
+    def _extract_contact(loc):
+        phone = _first_nonempty(loc.get("phone"), loc.get("telephone"), loc.get("contact_number"), loc.get("phoneNumber"))
+        email = _first_nonempty(loc.get("email"), loc.get("contact_email"), loc.get("emailAddress"))
+        cp = loc.get("contactPoint") or loc.get("contact_point")
+        if isinstance(cp, dict):
+            phone = phone or _first_nonempty(cp.get("telephone"), cp.get("phone"))
+            email = email or _first_nonempty(cp.get("email"))
+        return phone, email
 
-    def _extract_socials(loc):
-        return _as_list(loc.get("sameAs") or loc.get("same_as") or loc.get("social") or loc.get("social_links"))
+    def _extract_site_and_social(loc):
+        website = _first_nonempty(loc.get("website"), loc.get("url"), loc.get("homepage"))
+        socials = _as_list(loc.get("sameAs") or loc.get("same_as") or loc.get("social") or loc.get("social_links"))
+        return website, socials
 
-    def _map_embed_src(address, google_maps_url, map_embed_url):
-        raw = _first_nonempty(map_embed_url, google_maps_url)
-        if raw:
-            return raw
+    def _map_embed_src(loc, address):
+        # Prefer precise coordinates if present
+        lat = loc.get("geo_latitude") or loc.get("latitude") or (loc.get("geo", {}).get("latitude") if isinstance(loc.get("geo"), dict) else None)
+        lng = loc.get("geo_longitude") or loc.get("longitude") or (loc.get("geo", {}).get("longitude") if isinstance(loc.get("geo"), dict) else None)
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            return f"https://www.google.com/maps?q={lat},{lng}&z=15&output=embed"
+
+        # Then explicit map/link fields
+        map_url = _first_nonempty(loc.get("map_embed_url"), loc.get("map"))
+        gmaps   = _first_nonempty(loc.get("google_maps_url"), loc.get("maps_url"))
+        if map_url:
+            return map_url
+        if gmaps:
+            return gmaps
+
+        # Finally, synthesize from address
         if address:
             from urllib.parse import quote_plus
             return f"https://www.google.com/maps?q={quote_plus(address)}&output=embed"
         return ""
 
-    def _normalize_records(payload):
-        """Support {locations:[...]}, [ ... ], or single object."""
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            if isinstance(payload.get("locations"), list):
-                return payload["locations"]
-            return [payload]
-        return []
-
-    # ---------- parse files ----------
     items = []
-    files_seen = 0
-    records_seen = 0
-    rendered = 0
+    files_seen = records_seen = rendered = 0
 
-    for file in sorted(os.listdir(locations_dir)):
-        if not file.lower().endswith((".json", ".yaml", ".yml")):
+    for fname in sorted(os.listdir(locations_dir)):
+        if not fname.lower().endswith((".json", ".yaml", ".yml")):
             continue
         files_seen += 1
-        path = os.path.join(locations_dir, file)
+        path = os.path.join(locations_dir, fname)
         data = load_data(path)
         if not data:
             continue
+        records = data if isinstance(data, list) else [data]
 
-        for loc in _normalize_records(data):
+        # Files might wrap as {"locations":[...]}
+        if isinstance(records[0], dict) and isinstance(records[0].get("locations"), list):
+            records = records[0]["locations"]
+
+        for loc in records:
             if not isinstance(loc, dict):
                 continue
             records_seen += 1
 
-            # Name
             name = _first_nonempty(
                 loc.get("name"),
                 loc.get("location_name"),
@@ -436,54 +442,25 @@ def generate_contact_page():
                 loc.get("department"),
             ) or "Location"
 
-            # Address: string OR nested
-            addr = _first_nonempty(
-                loc.get("address"),
-                loc.get("formatted_address"),
-                loc.get("address_line"),
-            )
-            if not addr:
-                # Maybe nested under 'address'
-                addr = _format_address(_get_nested(loc, ("address",), ("Address",)))
+            # Address: support string, dict, or components (including your example keys)
+            addr = _first_nonempty(loc.get("address"), loc.get("formatted_address"), loc.get("address_line"))
+            addr = _format_address(addr, loc)
 
-            # Or assemble from flat components
-            if not addr:
-                line1 = _first_nonempty(loc.get("address1"), loc.get("address_line_1"), loc.get("street"), loc.get("streetAddress"))
-                line2 = _first_nonempty(loc.get("address2"), loc.get("address_line_2"), loc.get("suite"))
-                city  = _first_nonempty(loc.get("city"), loc.get("addressLocality"))
-                state = _first_nonempty(loc.get("state"), loc.get("addressRegion"))
-                zipc  = _first_nonempty(loc.get("zip"), loc.get("postalCode"))
-                parts = [line1, line2, city, state, zipc]
-                addr = " ".join([p for p in parts if p]).strip()
-
-            # Phone / Email: root OR under contactPoint
-            phone = _first_nonempty(loc.get("phone"), loc.get("telephone"), loc.get("contact_number"), loc.get("phoneNumber"))
-            email = _first_nonempty(loc.get("email"), loc.get("contact_email"), loc.get("emailAddress"))
-
-            contact_point = loc.get("contactPoint") or loc.get("contact_point")
-            if isinstance(contact_point, dict):
-                phone = phone or _first_nonempty(contact_point.get("telephone"), contact_point.get("phone"))
-                email = email or _first_nonempty(contact_point.get("email"))
+            # Contact
+            phone, email = _extract_contact(loc)
 
             # Hours
             hours = _extract_hours(loc)
 
-            # Website & socials
-            website = _extract_website(loc)
-            socials = _extract_socials(loc)
+            # Website/socials
+            website, socials = _extract_site_and_social(loc)
 
-            # Maps
-            map_src = _map_embed_src(
-                addr,
-                _first_nonempty(loc.get("google_maps_url"), loc.get("maps_url")),
-                _first_nonempty(loc.get("map_embed_url"), loc.get("map"))
-            )
+            # Map
+            map_src = _map_embed_src(loc, addr)
 
-            # Warn if sparse
             if not any([addr, phone, email, hours, website, socials, map_src]):
-                print(f"ℹ️ Sparse location data in {file} — consider adding address/email/hours/website/maps_url/openingHoursSpecification")
+                print(f"ℹ️ Sparse location data in {fname} — consider adding address/email/hours/website/maps_url or geo_latitude/geo_longitude")
 
-            # HTML block
             block = f"""
             <div class="card">
                 <h3>{escape_html(name)}</h3>
@@ -501,7 +478,8 @@ def generate_contact_page():
             if map_src:
                 block += f"""
                 <div style="margin-top: 1rem;">
-                    <iframe src="{escape_html(map_src)}" width="100%" height="320" style="border:0; border-radius: 8px;" allowfullscreen loading="lazy"></iframe>
+                    <iframe src="{escape_html(map_src)}" width="100%" height="320"
+                            style="border:0; border-radius: 8px;" allowfullscreen loading="lazy"></iframe>
                 </div>
                 """
 
@@ -509,60 +487,28 @@ def generate_contact_page():
             items.append(block)
             rendered += 1
 
-    # ---------- fallback: org-level contact if locations thin ----------
-    if not items:
-        # Try schemas/organization for a minimal card
-        org_dirs = ["schemas/organization", "schemas/organizations", "schemas/entity", "schemas/company", "schemas/business"]
-        org_path = None
-        for d in org_dirs:
-            if os.path.isdir(d):
-                for f in os.listdir(d):
-                    if f.lower().endswith((".json", ".yaml", ".yml")):
-                        org_path = os.path.join(d, f)
-                        break
-            if org_path:
-                break
-
-        if org_path:
-            org_data = load_data(org_path) or []
-            org = org_data[0] if isinstance(org_data, list) and org_data else (org_data if isinstance(org_data, dict) else {})
-            if isinstance(org, dict):
-                name = _first_nonempty(org.get("entity_name"), org.get("name")) or "Contact"
-                phone = _first_nonempty(org.get("telephone"), org.get("phone"))
-                email = _first_nonempty(org.get("email"))
-                addr  = _format_address(org.get("address")) or _first_nonempty(org.get("address"))
-                website = _first_nonempty(org.get("website"), org.get("url"))
-                socials = _extract_socials(org)
-                block = f"""
-                <div class="card">
-                    <h3>{escape_html(name)}</h3>
-                    {f'<p><strong>Address:</strong> {escape_html(addr)}</p>' if addr else ''}
-                    {f'<p><strong>Phone:</strong> {escape_html(phone)}</p>' if phone else ''}
-                    {f'<p><strong>Email:</strong> <a href="mailto:{escape_html(email)}">{escape_html(email)}</a></p>' if email else ''}
-                    {f'<p><strong>Website:</strong> <a href="{escape_html(website)}" target="_blank" rel="nofollow">{escape_html(website)}</a></p>' if website else ''}
-                </div>
-                """
-                items.append(block)
-                print("ℹ️ Used organization file as a fallback contact card.")
-
     if not items:
         print(f"⚠️ No usable contact info found (scanned {files_seen} files, {records_seen} records). Skipping contact.html")
         return False
 
     # Quick-contact header (first phone/email found)
     top_phone = top_email = ""
-    for block_src in [locations_dir]:
-        for file in sorted(os.listdir(block_src)):
-            if not file.lower().endswith((".json", ".yaml", ".yml")): continue
-            data = load_data(os.path.join(block_src, file)) or []
-            for loc in (data if isinstance(data, list) else [data]):
-                if not isinstance(loc, dict): continue
-                if not top_phone:
-                    top_phone = _first_nonempty(loc.get("phone"), loc.get("telephone"), _get_nested(loc, ("contactPoint","telephone")) or "")
-                if not top_email:
-                    top_email = _first_nonempty(loc.get("email"), loc.get("contact_email"), _get_nested(loc, ("contactPoint","email")) or "")
-                if top_phone and top_email: break
-            if top_phone and top_email: break
+    for fname in sorted(os.listdir(locations_dir)):
+        if not fname.lower().endswith((".json", ".yaml", ".yml")):
+            continue
+        data = load_data(os.path.join(locations_dir, fname)) or []
+        for loc in (data if isinstance(data, list) else [data]):
+            if not isinstance(loc, dict): continue
+            if not top_phone:
+                p1, _ = _extract_contact(loc)
+                top_phone = p1 or top_phone
+            if not top_email:
+                _, e1 = _extract_contact(loc)
+                top_email = e1 or top_email
+            if top_phone and top_email:
+                break
+        if top_phone and top_email:
+            break
 
     intro = "<p>We’d love to hear from you. Reach out using the details below or visit us at our offices.</p>"
     if top_phone or top_email:
