@@ -1,9 +1,19 @@
-name: 🌐 Auto-Ping Sitemap on Push
+name: "🌐 Build Pages + Sitemaps + Robots & Auto-Ping on Push"
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
+    paths:
+      - 'schemas/**'
+      - 'ai-generators/**'
+      - 'generate_sitemaps.py'
+      - 'generate_robots.py'
+      - 'CNAME'
+      - '.github/workflows/auto-ping-sitemap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   ping-search-engines:
@@ -12,7 +22,6 @@ jobs:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: 🐍 Set up Python
@@ -22,30 +31,71 @@ jobs:
 
       - name: 📦 Install Dependencies
         run: |
-          pip install PyYAML
+          python -m pip install --upgrade pip
+          pip install pyyaml
 
-      - name: 🗺️ Generate or Update Sitemap
+      # 1) Build public pages so sitemap has real HTML to list
+      - name: 🧱 Build Public Pages
+        run: python ai-generators/build_public_pages.py
+
+      - name: 💾 Commit Pages (if changed)
         run: |
-          python generate_sitemaps.py || echo "⚠️ Sitemap script failed, but continuing..."
-          touch ai-sitemap.xml
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html about.html services.html testimonials.html faqs.html help.html contact.html .nojekyll
+          git commit -m "AUTO: Build public pages" || echo "No page changes to commit"
+          git push || true
 
-      - name: 🤖 Ping Google & Bing
+      # 2) Generate BOTH sitemaps (HTML + AI)
+      - name: 🗺️ Generate Sitemaps
+        run: python generate_sitemaps.py --include-all-html
+
+      - name: 💾 Commit Sitemaps (if changed)
         run: |
-          SITEMAP_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/ai-sitemap.xml"
-          echo "📡 Pinging search engines with sitemap: $SITEMAP_URL"
+          git add sitemap.xml ai-sitemap.xml
+          git commit -m "AUTO: Update sitemaps" || echo "No sitemap changes to commit"
+          git push || true
 
-          # Ping Google
-          echo "→ Notifying Google Search..."
-          curl -s -o /dev/null -w "%{http_code}" "http://google.com/ping?sitemap=$SITEMAP_URL" \
-            && echo " ✅ Success" \
-            || echo " ❌ Failed (but workflow continues)"
+      # 3) Generate robots.txt at repo root
+      - name: 🤖 Generate robots.txt
+        run: python generate_robots.py
 
-          # Ping Bing
-          echo "→ Notifying Bing + Copilot..."
-          curl -s -o /dev/null -w "%{http_code}" "http://www.bing.com/ping?sitemap=$SITEMAP_URL" \
-            && echo " ✅ Success" \
-            || echo " ❌ Failed (but workflow continues)"
-
-      - name: ✅ Done
+      - name: 💾 Commit robots.txt (if changed)
         run: |
-          echo "🎉 Auto-ping complete. Search engines notified."
+          git add robots.txt
+          git commit -m "AUTO: Update robots.txt" || echo "No robots changes to commit"
+          git push || true
+
+      # 4) Ping Google & Bing with the *Pages* sitemap (and optionally AI sitemap)
+      - name: 📡 Ping Search Engines
+        run: |
+          OWNER_REPO="${{ github.repository }}"
+          OWNER="${OWNER_REPO%/*}"
+          REPO="${OWNER_REPO#*/}"
+          BRANCH="${{ github.ref_name || 'main' }}"
+          BASE="https://${OWNER}.github.io/${REPO}"
+
+          # Prefer custom domain if CNAME exists
+          if [ -f CNAME ]; then
+            HOST=$(cat CNAME | tr -d '\r' | sed 's#http://##; s#https://##' | tr -d '/')
+            if [ -n "$HOST" ]; then BASE="https://${HOST}"; fi
+          fi
+
+          PAGE_SITEMAP="${BASE}/sitemap.xml"
+          AI_SITEMAP="https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/ai-sitemap.xml"
+
+          echo "📄 Page sitemap: ${PAGE_SITEMAP}"
+          echo "🤖 AI sitemap:   ${AI_SITEMAP}"
+
+          echo "→ Notifying Google (page sitemap)…"
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.google.com/ping?sitemap=${PAGE_SITEMAP}" || true
+
+          echo "→ Notifying Bing (page sitemap)…"
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.bing.com/ping?sitemap=${PAGE_SITEMAP}" || true
+
+          # Optional: also ping AI sitemap (harmless if ignored)
+          echo "→ (Optional) Notifying Google (AI sitemap)…"
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.google.com/ping?sitemap=${AI_SITEMAP}" || true
+
+          echo "→ (Optional) Notifying Bing (AI sitemap)…"
+          curl -s -o /dev/null -w "%{http_code}\n" "https://www.bing.com/ping?sitemap=${AI_SITEMAP}" || true
