@@ -394,8 +394,9 @@ def generate_page(title, content):
 def generate_contact_page():
     """
     Builds contact.html from schemas/locations/*.{json,yaml,yml}
-    Always renders a top 'Quick Contact' card (name/email/phone) from the first location,
-    then renders full location card(s) below.
+    Quick Contact prefers contact_person + email; falls back gracefully.
+    The first location card suppresses phone/email if they match Quick Contact
+    to avoid redundancy.
     """
     locations_dir = "schemas/locations"
     print(f"🔍 Checking contact data in: {locations_dir}")
@@ -403,22 +404,27 @@ def generate_contact_page():
         print(f"❌ Locations directory not found: {locations_dir} — skipping contact.html")
         return False
 
-    def _extract_contact(loc):
+    # Local helpers using your global alias utilities
+    def _extract_contact(loc: dict):
         phone = _first_nonempty(_alias_get(loc, "phone"))
         email = _first_nonempty(_alias_get(loc, "email"))
         return phone, email
 
-    def _extract_site_and_social(loc):
+    def _extract_site_and_social(loc: dict):
         website = _first_nonempty(_alias_get(loc, "website"))
         socials = _as_list(_alias_get(loc, "sameAs"))
         return website, socials
 
+    # Walk all files / records
     items = []
     files_seen = records_seen = rendered = 0
-    first_name = ""
-    first_phone = ""
-    first_email = ""
 
+    # Quick Contact fields we want to populate once
+    qc_name = ""   # prefer contact_person, else entity/location name
+    qc_email = ""
+    qc_phone = ""
+
+    # First, scan and render cards (while capturing Quick Contact)
     for fname in sorted(os.listdir(locations_dir)):
         if not fname.lower().endswith((".json", ".yaml", ".yml")):
             continue
@@ -433,36 +439,51 @@ def generate_contact_page():
                 continue
             records_seen += 1
 
-            name   = _first_nonempty(_alias_get(loc, "entity_name"), loc.get("location_name"), "Location")
-            person = _first_nonempty(_alias_get(loc, "contact_person"))
+            # Prefer lawyer/contact person for Quick Contact headline
+            contact_person = _first_nonempty(_alias_get(loc, "contact_person"))
+            entity_name    = _first_nonempty(_alias_get(loc, "entity_name"))
+            location_name  = _first_nonempty(loc.get("location_name"))
+            card_heading   = entity_name or location_name or "Location"
+
             phone, email = _extract_contact(loc)
-            addr   = _format_address(loc.get("address"), loc)
-            hours  = _extract_hours(loc)
-            site, socials = _extract_site_and_social(loc)
-            map_src = _map_embed_src(loc, addr)
+            addr         = _format_address(loc.get("address"), loc)
+            hours        = _extract_hours(loc)
+            website, socials = _extract_site_and_social(loc)
+            map_src      = _map_embed_src(loc, addr)
 
-            # Capture for Quick Contact (first record only)
-            if not first_name:
-                first_name = name or ""
-            if not first_phone and phone:
-                first_phone = phone
-            if not first_email and email:
-                first_email = email
+            # Populate Quick Contact once: prefer contact_person for name
+            if not qc_name:
+                qc_name = contact_person or entity_name or location_name or "Contact"
+            if not qc_email and email:
+                qc_email = email
+            if not qc_phone and phone:
+                qc_phone = phone
 
-            block = f"<div class='card'>"
-            block += f"<h3>{escape_html(name)}</h3><p>"
-            if person:
-                block += f"<strong>Contact:</strong> {escape_html(person)}<br>"
+            # Build the card; for the *first* rendered card only, hide fields that duplicate Quick Contact
+            is_first_card = (rendered == 0)
+
+            show_phone = bool(phone)
+            show_email = bool(email)
+            if is_first_card:
+                if qc_phone and phone and phone.strip() == qc_phone.strip():
+                    show_phone = False
+                if qc_email and email and email.strip().lower() == qc_email.strip().lower():
+                    show_email = False
+
+            block = "<div class='card'>"
+            block += f"<h3>{escape_html(card_heading)}</h3><p>"
+            if contact_person:
+                block += f"<strong>Contact:</strong> {escape_html(contact_person)}<br>"
             if addr:
                 block += f"<strong>Address:</strong> {escape_html(addr)}<br>"
-            if phone:
+            if show_phone:
                 block += f"<strong>Phone:</strong> <a href='tel:{escape_html(phone)}'>{escape_html(phone)}</a><br>"
-            if email:
+            if show_email:
                 block += f"<strong>Email:</strong> <a href='mailto:{escape_html(email)}'>{escape_html(email)}</a><br>"
             if hours:
                 block += f"<strong>Hours:</strong> {escape_html(hours)}<br>"
-            if site:
-                block += f"<strong>Website:</strong> <a href='{escape_html(site)}' target='_blank' rel='nofollow'>{escape_html(site)}</a><br>"
+            if website:
+                block += f"<strong>Website:</strong> <a href='{escape_html(website)}' target='_blank' rel='nofollow'>{escape_html(website)}</a><br>"
             block += "</p>"
 
             if socials:
@@ -486,16 +507,16 @@ def generate_contact_page():
         print(f"⚠️ No usable contact info found (scanned {files_seen} files, {records_seen} records). Skipping contact.html")
         return False
 
-    # Intro + ALWAYS show Quick Contact (name + email + phone) from first record
+    # Build Quick Contact card (prefer showing Name + Email; include Phone if present)
     intro = "<p>We’d love to hear from you. Reach out using the details below or visit us at our offices.</p>"
-    if first_name or first_phone or first_email:
+    if qc_name or qc_email or qc_phone:
         intro += "<div class='card'><h2>Quick Contact</h2>"
-        if first_name:
-            intro += f"<p><strong>{escape_html(first_name)}</strong></p>"
-        if first_phone:
-            intro += f"<p><strong>Phone:</strong> <a href='tel:{escape_html(first_phone)}'>{escape_html(first_phone)}</a></p>"
-        if first_email:
-            intro += f"<p><strong>Email:</strong> <a href='mailto:{escape_html(first_email)}'>{escape_html(first_email)}</a></p>"
+        if qc_name:
+            intro += f"<p><strong>{escape_html(qc_name)}</strong></p>"
+        if qc_email:
+            intro += f"<p><strong>Email:</strong> <a href='mailto:{escape_html(qc_email)}'>{escape_html(qc_email)}</a></p>"
+        if qc_phone:
+            intro += f"<p><strong>Phone:</strong> <a href='tel:{escape_html(qc_phone)}'>{escape_html(qc_phone)}</a></p>"
         intro += "</div>"
 
     content = intro + "".join(items)
