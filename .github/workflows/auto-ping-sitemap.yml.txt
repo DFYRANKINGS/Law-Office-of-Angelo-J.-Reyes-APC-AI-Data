@@ -1,0 +1,51 @@
+name: 🌐 Auto-Ping Sitemap on Push
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  ping-search-engines:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install PyYAML
+
+      - name: 🗺️ Generate or Update Sitemap
+        run: |
+          python generate_sitemaps.py || echo "⚠️ Sitemap script failed, but continuing..."
+          touch ai-sitemap.xml
+
+      - name: 🤖 Ping Google & Bing
+        run: |
+          SITEMAP_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/ai-sitemap.xml"
+          echo "📡 Pinging search engines with sitemap: $SITEMAP_URL"
+
+          # Ping Google
+          echo "→ Notifying Google Search..."
+          curl -s -o /dev/null -w "%{http_code}" "http://google.com/ping?sitemap=$SITEMAP_URL" \
+            && echo " ✅ Success" \
+            || echo " ❌ Failed (but workflow continues)"
+
+          # Ping Bing
+          echo "→ Notifying Bing + Copilot..."
+          curl -s -o /dev/null -w "%{http_code}" "http://www.bing.com/ping?sitemap=$SITEMAP_URL" \
+            && echo " ✅ Success" \
+            || echo " ❌ Failed (but workflow continues)"
+
+      - name: ✅ Done
+        run: |
+          echo "🎉 Auto-ping complete. Search engines notified."
