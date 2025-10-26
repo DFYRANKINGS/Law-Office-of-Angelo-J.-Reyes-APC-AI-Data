@@ -1,0 +1,100 @@
+name: 🔄 Auto Refresh AI Files (Every 4 Weeks If Stale + Changed)
+
+on:
+  schedule:
+    - cron: "0 4 * * 0"   # Every Sunday at 04:00 UTC
+  workflow_dispatch:       # Allow manual run
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: 🕰️ Check If Sitemap Is Older Than 28 Days
+        id: check_stale
+        run: |
+          if [ -f "ai-sitemap.xml" ]; then
+            FILE_MTIME=$(stat -c %Y ai-sitemap.xml)
+            NOW=$(date +%s)
+            DIFF_DAYS=$(( (NOW - FILE_MTIME) / 86400 ))
+            echo "📄 ai-sitemap.xml last modified $DIFF_DAYS days ago."
+            if [ $DIFF_DAYS -ge 28 ]; then
+              echo "✅ File is stale — proceeding"
+              echo "is_stale=true" >> $GITHUB_ENV
+            else
+              echo "❌ File is fresh — skipping auto-refresh"
+              echo "is_stale=false" >> $GITHUB_ENV
+            fi
+          else
+            echo "⚠️ ai-sitemap.xml not found — treating as stale"
+            echo "is_stale=true" >> $GITHUB_ENV
+          fi
+
+      - name: 🔄 Skip If Not Stale
+        if: env.is_stale != 'true'
+        run: |
+          echo "✅ Skipping — recent activity detected."
+          exit 0
+
+      - name: 🗃️ Re-generate Schema Files
+        run: |
+          python ai-generators/generate_files_from_xlsx.py --input templates/client-data.xlsx
+
+      - name: 🗺️ Re-generate Sitemap
+        run: |
+          python generate_sitemaps.py
+          touch ai-sitemap.xml
+
+      - name: 🧪 Detect Real Changes
+        id: detect_changes
+        run: |
+          git add --all
+          if ! git diff --cached --quiet; then
+            echo "changes_detected=true" >> $GITHUB_ENV
+            echo "✅ Real changes detected — will commit and ping"
+          else
+            echo "changes_detected=false" >> $GITHUB_ENV
+            echo "✅ No real changes — skipping commit and ping"
+          fi
+
+      - name: 💾 Commit Only If Changed
+        if: env.changes_detected == 'true'
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "🔄 Auto-refresh: Content regenerated after 28+ days idle [$(date +'%Y-%m-%d')]"
+          git push origin main
+          echo "✅ Changes pushed"
+
+      - name: 🤖 Ping Search Engines (ONLY if changes committed)
+        if: env.changes_detected == 'true' && github.ref == 'refs/heads/main'
+        run: |
+          SITEMAP_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/ai-sitemap.xml"
+          echo "📡 Pinging search engines with sitemap: $SITEMAP_URL"
+
+          echo "→ Notifying Google Search..."
+          curl -s -o /dev/null -w "%{http_code}\n" "http://google.com/ping?sitemap=$SITEMAP_URL" \
+            && echo "✅ Google ping successful" \
+            || echo "❌ Google ping failed (workflow continues)"
+
+          echo "→ Notifying Bing + Copilot..."
+          curl -s -o /dev/null -w "%{http_code}\n" "http://www.bing.com/ping?sitemap=$SITEMAP_URL" \
+            && echo "✅ Bing ping successful" \
+            || echo "❌ Bing ping failed (workflow continues)"
