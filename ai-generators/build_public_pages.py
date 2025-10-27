@@ -343,14 +343,68 @@ def generate_nav():
         </ul>
     </nav>
     """
+def get_nav_links():
+    return [
+        ("Home", "index.html"),
+        ("About", "about.html"),
+        ("Services", "services.html"),
+        ("Testimonials", "testimonials.html"),
+        ("FAQs", "faqs.html"),
+        ("Help", "help.html"),
+        ("Contact", "contact.html"),
+    ]
+
+def generate_nav():
+    items = "\n".join(
+        f'<li><a href="{href}" style="color: white; text-decoration: none;">{escape_html(label)}</a></li>'
+        for label, href in get_nav_links()
+    )
+    return f"""
+    <nav style="background: #2c3e50; padding: 1rem; margin-bottom: 2rem;">
+        <ul style="list-style: none; display: flex; gap: 2rem; margin: 0; padding: 0; flex-wrap: wrap; justify-content: center;">
+            {items}
+        </ul>
+    </nav>
+    """
+
+def generate_footer_nav():
+    items = " • ".join(
+        f'<a href="{href}" style="text-decoration: none; color: #3498db;">{escape_html(label)}</a>'
+        for label, href in get_nav_links()
+    )
+    return f"""
+    <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; text-align: center;">
+        <div style="margin-bottom: .5rem;">{items}</div>
+        <div><a href="#top" style="text-decoration:none;">⬆️ Back to top</a></div>
+    </div>
+    """
+
+def generate_nav_jsonld(site_name):
+    # Optional: SiteNavigationElement for crawlers
+    items = [
+        {
+            "@type": "SiteNavigationElement",
+            "name": label,
+            "url": href
+        } for (label, href) in get_nav_links()
+    ]
+    return {
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": f"{site_name} Site Navigation",
+        "itemListElement": items
+    }
 
 def generate_page(title, content):
-    # Entity-driven branding for <title> and favicon
     org = load_org_meta()
     site_name = org.get("name") or "Site"
     page_title = f"{escape_html(site_name)} — {escape_html(title)}" if title else escape_html(site_name)
     favicon_href = org.get("favicon") or "favicon.ico"
     theme_color = "#2c3e50"
+
+    # JSON-LD nav (optional but nice)
+    import json as _json
+    nav_jsonld = _json.dumps(generate_nav_jsonld(site_name))
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -365,6 +419,7 @@ def generate_page(title, content):
     <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
     <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
     <link rel="manifest" href="site.webmanifest">
+    <script type="application/ld+json">{nav_jsonld}</script>
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.7; }}
         h1, h2, h3 {{ color: #2c3e50; }}
@@ -377,12 +432,14 @@ def generate_page(title, content):
     </style>
 </head>
 <body>
+    <a id="top"></a>
     {generate_nav()}
     <div class="page-header">
         <h1>{escape_html(title or site_name)}</h1>
     </div>
     {content}
-    <footer style="margin-top: 4rem; padding-top: 2rem; border-top: 1px solid #eee; text-align: center; color: #7f8c8d;">
+    {generate_footer_nav()}
+    <footer style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; text-align: center; color: #7f8c8d;">
         <p>© {datetime.now().year} — Auto-generated from structured data. Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
     </footer>
 </body>
@@ -873,32 +930,69 @@ def generate_faq_page():
         print(f"❌ FAQ directory not found: {faq_dir} — skipping faqs.html")
         return False
 
-    items = []
-    for file in os.listdir(faq_dir):
-        if file.endswith((".json", ".yaml", ".yml")):
-            filepath = os.path.join(faq_dir, file)
-            faq_data = load_data(filepath)
-            if not faq_data:
-                continue
-            for item in (faq_data if isinstance(faq_data, list) else [faq_data]):
-                question = (item.get('question') or '').strip()
-                answer = (item.get('answer') or '').strip()
-                if not question:
-                    continue
-                items.append(f"""
-                <div class="card">
-                    <h3 style="margin: 0 0 0.5rem 0;">{escape_html(question)}</h3>
-                    <p>{escape_html(answer)}</p>
-                </div>
-                """)
+    def pick_category(obj, filename):
+        # try several fields
+        cats = _as_list(obj.get("category")) or _as_list(obj.get("categories")) \
+             or _as_list(obj.get("practice_area")) or _as_list(obj.get("topic")) \
+             or _as_list(obj.get("topics"))
+        if cats:
+            return cats[0]
+        # fallback: folder or filename hint
+        base = os.path.splitext(os.path.basename(filename))[0]
+        if "-" in base:
+            guess = base.split("-")[0]
+            if guess and not guess.isnumeric():
+                return guess.replace("_", " ").title()
+        return "General"
 
-    if not items:
+    # Collect by category
+    by_cat = {}
+    for file in sorted(os.listdir(faq_dir)):
+        if not file.endswith((".json", ".yaml", ".yml")):
+            continue
+        path = os.path.join(faq_dir, file)
+        data = load_data(path)
+        if not data:
+            continue
+        records = data if isinstance(data, list) else [data]
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+            q = (item.get("question") or "").strip()
+            a = (item.get("answer") or "").strip()
+            if not q:
+                continue
+            cat = pick_category(item, file)
+            by_cat.setdefault(cat, []).append((q, a))
+
+    if not by_cat:
         print("⚠️ No valid FAQs found — skipping faqs.html")
         return False
 
+    # Build mini TOC
+    cat_names = sorted(by_cat.keys(), key=lambda s: s.lower())
+    toc = "<div class='card'><strong>Jump to:</strong> " + " • ".join(
+        f"<a href='#{slugify(c)}'>{escape_html(c)}</a>" for c in cat_names
+    ) + "</div>"
+
+    # Build sections
+    sections = []
+    for c in cat_names:
+        items = by_cat[c]
+        cards = "".join(
+            f"""
+            <div class="card">
+                <h3 style="margin: 0 0 .5rem 0;">{escape_html(q)}</h3>
+                <p>{escape_html(a)}</p>
+            </div>
+            """ for (q, a) in items
+        )
+        sections.append(f"<h2 id='{slugify(c)}'>{escape_html(c)}</h2>{cards}")
+
+    html = toc + "\n".join(sections)
     with open("faqs.html", "w", encoding="utf-8") as f:
-        f.write(generate_page("Frequently Asked Questions", "".join(items)))
-    print(f"✅ faqs.html generated ({len(items)} FAQs)")
+        f.write(generate_page("Frequently Asked Questions", html))
+    print(f"✅ faqs.html generated ({sum(len(v) for v in by_cat.values())} FAQs across {len(by_cat)} categories)")
     return True
 
 def generate_help_articles_page():
@@ -909,65 +1003,83 @@ def generate_help_articles_page():
         return False
 
     files_found = [f for f in os.listdir(help_dir) if f.endswith(".md")]
-    print(f"📄 Found {len(files_found)} .md files: {files_found[:5]}")
-
     if not files_found:
         print("⚠️ No .md files found — skipping help.html")
         return False
 
-    articles = []
-    for file in files_found:
-        filepath = os.path.join(help_dir, file)
-        with open(filepath, 'r', encoding='utf-8') as f:
+    def parse_md(path):
+        # very light frontmatter parser
+        with open(path, "r", encoding="utf-8") as f:
             content = f.read()
-
         title = None
+        categories = []
+        in_front = False
+        front_done = False
         body_lines = []
-        in_frontmatter = False
-        frontmatter_done = False
-
         for line in content.splitlines():
-            if line.strip() == "---" and not frontmatter_done:
-                if not in_frontmatter:
-                    in_frontmatter = True
-                else:
-                    in_frontmatter = False
-                    frontmatter_done = True
+            if line.strip() == "---" and not front_done:
+                in_front = not in_front
+                if not in_front:
+                    front_done = True
                 continue
-
-            if in_frontmatter and not frontmatter_done:
-                if line.lower().startswith("title:"):
+            if in_front and not front_done:
+                low = line.lower()
+                if low.startswith("title:"):
                     title = line.split(":", 1)[1].strip()
+                if low.startswith("category:") or low.startswith("categories:") or low.startswith("practice_area:") or low.startswith("topic:") or low.startswith("topics:"):
+                    val = line.split(":", 1)[1].strip()
+                    if val:
+                        categories.extend([v.strip() for v in val.split(",") if v.strip()])
             else:
                 body_lines.append(line)
-
         if not title:
-            title = file.replace(".md", "").replace("-", " ").title()
+            title = os.path.basename(path).replace(".md", "").replace("-", " ").title()
+        if not categories:
+            # infer category from filename prefix as fallback
+            base = os.path.splitext(os.path.basename(path))[0]
+            if "-" in base:
+                guess = base.split("-")[0]
+                if guess and not guess.isnumeric():
+                    categories = [guess.replace("_", " ").title()]
+        if not categories:
+            categories = ["General"]
+        return title, categories[0], body_lines
 
-        html_lines = []
-        for line in body_lines:
+    def md_to_html(lines):
+        out = []
+        for line in lines:
             if line.startswith("## "):
-                html_lines.append(f"<h2>{escape_html(line[3:])}</h2>")
+                out.append(f"<h2>{escape_html(line[3:])}</h2>")
             elif line.startswith("# "):
-                html_lines.append(f"<h1>{escape_html(line[2:])}</h1>")
+                out.append(f"<h1>{escape_html(line[2:])}</h1>")
             elif line.startswith(("- ", "* ")):
-                html_lines.append(f"<p>• {escape_html(line[2:])}</p>")
+                out.append(f"<p>• {escape_html(line[2:])}</p>")
             elif line.strip() == "":
-                html_lines.append("<br/>")
+                out.append("<br/>")
             else:
-                html_lines.append(f"<p>{escape_html(line)}</p>")
+                out.append(f"<p>{escape_html(line)}</p>")
+        return "".join(out)
 
-        article_html = f"""
-        <div class="card">
-            <h2>{escape_html(title)}</h2>
-            {''.join(html_lines)}
-        </div>
-        """
-        articles.append(article_html)
+    # group by category
+    by_cat = {}
+    for file in sorted(files_found):
+        path = os.path.join(help_dir, file)
+        title, cat, body_lines = parse_md(path)
+        html = f"<div class='card'><h2>{escape_html(title)}</h2>{md_to_html(body_lines)}</div>"
+        by_cat.setdefault(cat, []).append(html)
+
+    cat_names = sorted(by_cat.keys(), key=lambda s: s.lower())
+    toc = "<div class='card'><strong>Jump to:</strong> " + " • ".join(
+        f"<a href='#{slugify(c)}'>{escape_html(c)}</a>" for c in cat_names
+    ) + "</div>"
+
+    sections = []
+    for c in cat_names:
+        sections.append(f"<h2 id='{slugify(c)}'>{escape_html(c)}</h2>" + "".join(by_cat[c]))
 
     with open("help.html", "w", encoding="utf-8") as f:
-        f.write(generate_page("Help Center", "".join(articles)))
-    print(f"✅ help.html generated ({len(articles)} articles)")
+        f.write(generate_page("Help Center", toc + "\n".join(sections)))
+    print(f"✅ help.html generated ({sum(len(v) for v in by_cat.values())} articles across {len(by_cat)} categories)")
     return True
 
 # =========================
