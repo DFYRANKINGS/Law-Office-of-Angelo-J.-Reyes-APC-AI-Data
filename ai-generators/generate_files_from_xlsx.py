@@ -1,16 +1,22 @@
 # ai-generators/generate_files_from_xlsx.py
 import os
+import sys
 import re
 import json
-import sys
-from pathlib import Path
-from hashlib import md5
+import hashlib
+from datetime import datetime, date
 
 import pandas as pd
 
-# ---------------------------
-# Helpers
-# ---------------------------
+# -----------------------
+# Utilities
+# -----------------------
+def log(msg: str):
+    print(msg, flush=True)
+
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
 def slugify(text):
     """Generate clean, URL-friendly slug from text."""
     if text is None:
@@ -20,404 +26,437 @@ def slugify(text):
     text = re.sub(r'[\s]+', '-', text.strip().lower())
     return text or "untitled"
 
-def coerce_json_value(v):
-    """Make values JSON-serializable and stable."""
-    if pd.isna(v):
-        return None
-    # Convert numpy types gracefully
-    if hasattr(v, "item"):
-        try:
-            return v.item()
-        except Exception:
-            pass
-    if isinstance(v, (list, tuple)):
-        return [coerce_json_value(x) for x in v]
-    if isinstance(v, dict):
-        return {str(k): coerce_json_value(v) for k,v in v.items()}
-    return v
+def safe_filename(name: str, ext: str):
+    name = slugify(name)
+    if not ext.startswith("."):
+        ext = "." + ext
+    return f"{name}{ext}"
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Lowercase, trim, and normalize column names."""
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
-def row_to_dict(row) -> dict:
+def is_empty_row(sr: pd.Series) -> bool:
+    # Treat a row with all NaN or empty strings as empty
+    if sr.dropna().empty:
+        return True
+    for v in sr.values:
+        if isinstance(v, str) and v.strip():
+            return False
+        if not (isinstance(v, float) and pd.isna(v)):
+            return False
+    return True
+
+def coerce_json_value(v):
+    """Make values JSON-serializable and stable."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+
+    # Pandas / numpy scalars -> native python
+    if hasattr(v, "item"):
+        try:
+            v = v.item()
+        except Exception:
+            pass
+
+    # Pandas Timestamp / Python datetime & date -> ISO string
+    if isinstance(v, pd.Timestamp):
+        # If it looks like a date-only value, keep it date-only
+        if v.tz is None and v.hour == 0 and v.minute == 0 and v.second == 0 and v.microsecond == 0:
+            return v.date().isoformat()
+        return v.isoformat()
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+
+    # Containers: recurse
+    if isinstance(v, (list, tuple)):
+        return [coerce_json_value(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): coerce_json_value(val) for k, val in v.items()}
+
+    # Basic types (str, int, float, bool) are fine
+    return v
+
+def write_json(path: str, data: dict):
+    # Coerce all values
+    def _coerce(obj):
+        if isinstance(obj, dict):
+            return {str(k): _coerce(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_coerce(x) for x in obj]
+        return coerce_json_value(obj)
+
+    payload = _coerce(data)
+
+    ensure_dir(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    log(f"✅ Generated: {path}")
+
+def write_text(path: str, text: str):
+    ensure_dir(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    log(f"✅ Generated: {path}")
+
+def stable_key(row: pd.Series, key_columns: list[str]) -> str:
     """
-    Return a plain dict for a row that may be a pandas Series or already a dict.
+    Build a stable key based on the subset of columns that define identity.
+    If none are present, hash the non-empty values for determinism.
     """
-    if isinstance(row, dict):
-        base = row
+    norm = {}
+    if isinstance(row, pd.Series):
+        for c in key_columns:
+            if c in row.index and pd.notna(row[c]) and str(row[c]).strip():
+                norm[c] = str(row[c]).strip()
     else:
-        # pandas Series
-        base = row.to_dict()
-    out = {}
-    for k, v in base.items():
-        if pd.isna(v):
+        # defensive fallback if a dict somehow gets passed
+        for c in key_columns:
+            v = row.get(c)
+            if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
+                norm[c] = str(v).strip()
+
+    if norm:
+        parts = [norm[k] for k in sorted(norm.keys())]
+        base = "-".join(slugify(p) for p in parts if p)
+        return base or "item"
+
+    # Fallback: hash a deterministic subset of row data
+    if isinstance(row, pd.Series):
+        payload = {k: str(row[k]) for k in sorted(row.index) if pd.notna(row[k])}
+    else:
+        payload = {k: str(row[k]) for k in sorted(row.keys()) if row.get(k) is not None}
+    h = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return f"item-{h}"
+
+# -----------------------
+# Sheet processors
+# -----------------------
+def process_entity_info(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
+    for _, row in df.iterrows():
+        if is_empty_row(row):
             continue
-        out[str(k)] = coerce_json_value(v)
-    return out
+        # Prefer entity_name slug; if missing, compose stable key
+        name = str(row.get("entity_name", "")).strip()
+        filename = safe_filename(name or stable_key(row, ["entity_name", "Legal"]), ".json")
+        path = os.path.join(out_dir, filename)
 
-def first_nonempty(row_dict: dict, keys):
-    """Return the first non-empty string from a list of keys in row_dict."""
-    for k in keys:
-        if k in row_dict and row_dict[k] not in (None, ""):
-            s = str(row_dict[k]).strip()
-            if s:
-                return s
-    return None
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
 
-def stable_key(row, candidates):
-    """
-    Return a stable, deterministic key for a row that may be a pandas Series or a dict.
-    Prefer explicit ID/slug-like fields; otherwise hash the normalized payload.
-    """
-    rd = row_to_dict(row)
+        write_json(path, item)
+        count += 1
+    return count
 
-    # Try candidates in order
-    cand = first_nonempty(rd, candidates)
-    if cand:
-        return slugify(cand)
+def process_services(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
+    for _, row in df.iterrows():
+        if is_empty_row(row):
+            continue
+        title = str(row.get("title", "")).strip() or str(row.get("service_name", "")).strip()
+        slug = str(row.get("slug", "")).strip() or slugify(title or stable_key(row, ["service_id", "title", "service_name"]))
+        path = os.path.join(out_dir, f"{slug}.json")
 
-    # If no candidate available, try secondary fallbacks commonly present
-    fallback = first_nonempty(rd, [
-        "entity_name", "name", "title", "question", "member_name",
-        "service_name", "product_name"
-    ])
-    if fallback:
-        return slugify(fallback)
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
 
-    # As a last resort, hash the sorted payload for deterministic key
-    payload = {k: str(rd[k]) for k in sorted(rd.keys()) if rd[k] is not None}
-    digest = md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-    return f"item-{digest}"
+        write_json(path, item)
+        count += 1
+    return count
 
-def write_json(path: Path, data: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+def process_products(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
+    for _, row in df.iterrows():
+        if is_empty_row(row):
+            continue
+        name = str(row.get("name", "")).strip()
+        slug = str(row.get("slug", "")).strip() or slugify(name or stable_key(row, ["product_id", "name"]))
+        path = os.path.join(out_dir, f"{slug}.json")
 
-def write_markdown(path: Path, title: str, slug: str, content: str):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        f.write("---\n")
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
+
+        write_json(path, item)
+        count += 1
+    return count
+
+def process_faqs(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
+    for _, row in df.iterrows():
+        if is_empty_row(row):
+            continue
+        q = str(row.get("question", "")).strip()
+        slug_val = str(row.get("slug", "")).strip()
+        slug_final = slug_val or slugify(q or stable_key(row, ["question"]))
+        path = os.path.join(out_dir, f"{slug_final}.json")
+
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
+
+        write_json(path, item)
+        count += 1
+    return count
+
+def process_help_articles(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
+    for _, row in df.iterrows():
+        if is_empty_row(row):
+            continue
+        title = str(row.get("title", "")).strip()
+        slug_val = str(row.get("slug", "")).strip()
+        slug_final = slug_val or slugify(title or stable_key(row, ["article_id", "title"]))
+        body = str(row.get("article", "")).strip()
+
+        fm_lines = ["---"]
         if title:
-            f.write(f"title: {title}\n")
-        f.write(f"slug: {slug}\n")
-        f.write("---\n\n")
-        f.write(content or "")
+            fm_lines.append(f"title: {title}")
+        fm_lines.append(f"slug: {slug_final}")
+        if str(row.get("article_type", "")).strip():
+            fm_lines.append(f"article_type: {str(row.get('article_type')).strip()}")
+        if str(row.get("published_date", "")).strip():
+            fm_lines.append(f"published_date: {coerce_json_value(row.get('published_date'))}")
+        if str(row.get("url", "")).strip():
+            fm_lines.append(f"url: {str(row.get('url')).strip()}")
+        if str(row.get("keywords", "")).strip():
+            fm_lines.append(f"keywords: {str(row.get('keywords')).strip()}")
+        fm_lines.append("---\n")
 
-# ---------------------------
-# Sheet configuration
-# ---------------------------
-SHEET_CONFIG = {
-    # sheet_name: {dir, key_candidates, type}
-    "entity_info": {
-        "dir": "schemas/organization",
-        "key_candidates": ["slug", "entity_name", "name", "title"],
-        "type": "json",
-    },
-    "Services": {
-        "dir": "schemas/services",
-        "key_candidates": ["slug", "service_name", "name", "title"],
-        "type": "json",
-    },
-    "Products": {
-        "dir": "schemas/products",
-        "key_candidates": ["slug", "product_name", "name", "title"],
-        "type": "json",
-    },
-    "FAQs": {
-        "dir": "schemas/faqs",
-        "key_candidates": ["slug", "question"],
-        "type": "json",
-    },
-    "Help Articles": {
-        "dir": "schemas/help-articles",
-        "key_candidates": ["slug", "title"],
-        "type": "markdown",
-    },
-    "Reviews": {
-        "dir": "schemas/reviews",
-        "key_candidates": ["slug", "review_id", "title", "customer_name", "author"],
-        "type": "json",
-    },
-    "Locations": {
-        "dir": "schemas/locations",
-        "key_candidates": ["slug", "location_id", "location_name", "entity_name", "name"],
-        "type": "json",
-    },
-    "Team": {
-        "dir": "schemas/team",
-        "key_candidates": ["slug", "member_name", "name", "title"],
-        "type": "json",
-    },
-    "Awards & Certifications": {
-        "dir": "schemas/awards",
-        "key_candidates": ["slug", "title", "name", "award_name"],
-        "type": "json",
-    },
-    # Some workbooks use "Press/News Mentions" or "PressNews Mentions"
-    "Press/News Mentions": {
-        "dir": "schemas/press",
-        "key_candidates": ["slug", "title", "name"],
-        "type": "json",
-    },
-    "PressNews Mentions": {
-        "dir": "schemas/press",
-        "key_candidates": ["slug", "title", "name"],
-        "type": "json",
-    },
-    "Case Studies": {
-        "dir": "schemas/case-studies",
-        "key_candidates": ["slug", "case_id", "title", "name"],
-        "type": "json",
-    },
-}
+        md = "\n".join(fm_lines) + (body or "")
+        path = os.path.join(out_dir, f"{slug_final}.md")
+        write_text(path, md)
+        count += 1
+    return count
 
-# ---------------------------
-# Processing per sheet
-# ---------------------------
-def process_entity_info(df: pd.DataFrame, out_dir: Path):
-    processed = 0
+def process_reviews(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
     for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["entity_info"]["key_candidates"])
-        path = out_dir / f"{key}.json"
+        if is_empty_row(row):
+            continue
+        # Build slug from customer_name + review_title as identity
+        name = str(row.get("customer_name", "")).strip()
+        title = str(row.get("review_title", "")).strip()
+        slug_final = slugify(name or "") + ("-" if name and title else "") + slugify(title or "")
+        if not slug_final or slug_final == "-":
+            slug_final = slugify(stable_key(row, ["customer_name", "review_title", "date"]))
+        path = os.path.join(out_dir, f"{slug_final}.json")
 
-        # Normalize a few typical fields
-        data = {}
-        for col, val in rd.items():
-            data[col] = val
-
-        write_json(path, data)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
-
-def process_services(df: pd.DataFrame, out_dir: Path):
-    processed = 0
-    for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["Services"]["key_candidates"])
-        path = out_dir / f"{key}.json"
-
-        item = {
-            "name": rd.get("service_name") or rd.get("name") or rd.get("title") or key.replace("-", " ").title(),
-        }
-        if rd.get("description"):   item["description"] = rd["description"]
-        if rd.get("price_range"):   item["priceRange"]  = rd["price_range"]
-        if rd.get("license_number"): item["license"]    = rd["license_number"]
-        if rd.get("bar_number"):     item["barNumber"]  = rd["bar_number"]
-        if rd.get("npi_number"):     item["npiNumber"]  = rd["npi_number"]
-        if rd.get("certification_body"): item["certification"] = rd["certification_body"]
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
 
         write_json(path, item)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
+        count += 1
+    return count
 
-def process_products(df: pd.DataFrame, out_dir: Path):
-    processed = 0
+def process_locations(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
     for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["Products"]["key_candidates"])
-        path = out_dir / f"{key}.json"
-        write_json(path, rd)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
+        if is_empty_row(row):
+            continue
+        nm = str(row.get("location_name", "")).strip() or str(row.get("entity_name", "")).strip()
+        slug_final = str(row.get("slug", "")).strip() or slugify(nm or stable_key(row, ["location_id", "entity_name"]))
+        path = os.path.join(out_dir, f"{slug_final}.json")
 
-def process_faqs(df: pd.DataFrame, out_dir: Path):
-    processed = 0
-    for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["FAQs"]["key_candidates"])  # usually slug or question
-        path = out_dir / f"{key}.json"
-
-        item = {
-            "question": rd.get("question") or key.replace("-", " ").title(),
-            "answer": rd.get("answer") or "",
-        }
-        write_json(path, item)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
-
-def process_help_articles(df: pd.DataFrame, out_dir: Path):
-    processed = 0
-    for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        # Prefer explicit slug; else title → slug
-        slug = rd.get("slug") or rd.get("title") or None
-        key = slugify(slug) if slug else stable_key(row, SHEET_CONFIG["Help Articles"]["key_candidates"])
-        path = out_dir / f"{key}.md"
-
-        title = rd.get("title") or key.replace("-", " ").title()
-        content = rd.get("article") or rd.get("content") or rd.get("body") or ""
-
-        write_markdown(path, title, key, content)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
-
-def process_reviews(df: pd.DataFrame, out_dir: Path):
-    processed = 0
-    for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["Reviews"]["key_candidates"])
-        path = out_dir / f"{key}.json"
-        write_json(path, rd)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
-
-def process_locations(df: pd.DataFrame, out_dir: Path):
-    processed = 0
-    for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["Locations"]["key_candidates"])
-        path = out_dir / f"{key}.json"
-        write_json(path, rd)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
-
-def process_team(df: pd.DataFrame, out_dir: Path):
-    processed = 0
-    for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["Team"]["key_candidates"])
-        path = out_dir / f"{key}.json"
-
-        item = {
-            "name": rd.get("member_name") or rd.get("name") or rd.get("title") or key.replace("-", " ").title(),
-            "role": rd.get("role") or "",
-            "description": rd.get("bio") or rd.get("description") or "",
-        }
-        if rd.get("license_number"): item["license"]    = rd["license_number"]
-        if rd.get("bar_number"):     item["barNumber"]  = rd["bar_number"]
-        if rd.get("npi_number"):     item["npiNumber"]  = rd["npi_number"]
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
 
         write_json(path, item)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
+        count += 1
+    return count
 
-def process_awards(df: pd.DataFrame, out_dir: Path):
-    processed = 0
+def process_team(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
     for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["Awards & Certifications"]["key_candidates"])
-        path = out_dir / f"{key}.json"
-        write_json(path, rd)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
+        if is_empty_row(row):
+            continue
+        nm = str(row.get("member_name", "")).strip() or str(row.get("name", "")).strip()
+        slug_final = str(row.get("slug", "")).strip() or slugify(nm or stable_key(row, ["member_id", "member_name", "name"]))
+        path = os.path.join(out_dir, f"{slug_final}.json")
 
-def process_press(df: pd.DataFrame, out_dir: Path):
-    processed = 0
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
+
+        write_json(path, item)
+        count += 1
+    return count
+
+def process_awards(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
     for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        # Works for either sheet label
-        key = stable_key(row, ["slug", "title", "name", "press_id"])
-        path = out_dir / f"{key}.json"
-        write_json(path, rd)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
+        if is_empty_row(row):
+            continue
+        nm = str(row.get("award_name", "")).strip() or str(row.get("title", "")).strip()
+        slug_final = str(row.get("slug", "")).strip() or slugify(nm or stable_key(row, ["award_id", "award_name", "title"]))
+        path = os.path.join(out_dir, f"{slug_final}.json")
 
-def process_case_studies(df: pd.DataFrame, out_dir: Path):
-    processed = 0
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
+
+        write_json(path, item)
+        count += 1
+    return count
+
+def process_press(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
     for _, row in df.iterrows():
-        rd = row_to_dict(row)
-        key = stable_key(row, SHEET_CONFIG["Case Studies"]["key_candidates"])
-        path = out_dir / f"{key}.json"
-        write_json(path, rd)
-        print(f"✅ Generated: {path}")
-        processed += 1
-    return processed
+        if is_empty_row(row):
+            continue
+        nm = str(row.get("title", "")).strip()
+        slug_final = str(row.get("slug", "")).strip() or slugify(nm or stable_key(row, ["press_id", "title"]))
+        path = os.path.join(out_dir, f"{slug_final}.json")
 
-# ---------------------------
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
+
+        write_json(path, item)
+        count += 1
+    return count
+
+def process_case_studies(df: pd.DataFrame, out_dir: str) -> int:
+    df = normalize_columns(df)
+    ensure_dir(out_dir)
+    count = 0
+    for _, row in df.iterrows():
+        if is_empty_row(row):
+            continue
+        nm = str(row.get("title", "")).strip()
+        slug_final = str(row.get("slug", "")).strip() or slugify(nm or stable_key(row, ["case_id", "title"]))
+        path = os.path.join(out_dir, f"{slug_final}.json")
+
+        item = {}
+        for col in df.columns:
+            v = row[col]
+            if pd.isna(v):
+                continue
+            item[col] = v
+
+        write_json(path, item)
+        count += 1
+    return count
+
+# -----------------------
 # Main
-# ---------------------------
+# -----------------------
 def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
-    print("Processing detected XLSX files...")
-    print(f"📄 Processing: {input_file}")
+    log(f"📂 Opening Excel file: {input_file}")
 
     if not os.path.exists(input_file):
-        print(f"❌ FATAL: Excel file not found at {input_file}")
+        log(f"❌ FATAL: Excel file not found at {input_file}")
         sys.exit(1)
+    else:
+        log(f"✅ Excel file confirmed at: {input_file}")
 
-    print(f"📂 Opening Excel file: {input_file}")
     try:
         xlsx = pd.ExcelFile(input_file)
+        log(f"📄 Available sheets in workbook: {xlsx.sheet_names}")
     except Exception as e:
-        print(f"❌ Failed to load Excel file: {e}")
+        log(f"❌ Failed to load Excel file: {e}")
         sys.exit(1)
 
-    print(f"📄 Available sheets in workbook: {xlsx.sheet_names}")
+    # Map sheet names to output dirs + processor function
+    sheet_map = [
+        ("entity_info",             "schemas/organization",      process_entity_info),
+        ("Services",                "schemas/services",          process_services),
+        ("Products",                "schemas/products",          process_products),
+        ("FAQs",                    "schemas/faqs",              process_faqs),
+        ("Help Articles",           "schemas/help-articles",     process_help_articles),
+        ("Reviews",                 "schemas/reviews",           process_reviews),
+        ("Locations",               "schemas/locations",         process_locations),
+        ("Team",                    "schemas/team",              process_team),
+        ("Awards & Certifications", "schemas/awards",            process_awards),
+        ("PressNews Mentions",      "schemas/press",             process_press),
+        ("Case Studies",            "schemas/case-studies",      process_case_studies),
+    ]
 
     total = 0
-    for sheet_name in xlsx.sheet_names:
-        if sheet_name not in SHEET_CONFIG:
-            print(f"⚠️ Skipping unsupported sheet: {sheet_name}")
+    for sheet_name, out_dir, handler in sheet_map:
+        if sheet_name not in xlsx.sheet_names:
+            log(f"⚠️ Skipping missing sheet: {sheet_name}")
             continue
 
-        cfg = SHEET_CONFIG[sheet_name]
-        out_dir = Path(cfg["dir"])
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        print(f"\n📄 Processing sheet: {sheet_name}")
-        try:
-            df = xlsx.parse(sheet_name)
-        except Exception as e:
-            print(f"❌ Failed to parse sheet '{sheet_name}': {e}")
-            continue
-
+        log(f"\n📄 Processing sheet: {sheet_name}")
+        df = xlsx.parse(sheet_name)
         df = normalize_columns(df)
-        print(f"🧹 Cleaned column names: {list(df.columns)}")
-
+        log(f"🧹 Cleaned column names: {list(df.columns)}")
         if df.empty:
-            print(f"⚠️ Sheet '{sheet_name}' is empty — skipping")
+            log(f"⚠️ Sheet '{sheet_name}' is empty — skipping")
             continue
 
-        # Route to the proper handler
-        if sheet_name == "entity_info":
-            count = process_entity_info(df, out_dir)
-        elif sheet_name == "Services":
-            count = process_services(df, out_dir)
-        elif sheet_name == "Products":
-            count = process_products(df, out_dir)
-        elif sheet_name == "FAQs":
-            count = process_faqs(df, out_dir)
-        elif sheet_name == "Help Articles":
-            count = process_help_articles(df, out_dir)
-        elif sheet_name == "Reviews":
-            count = process_reviews(df, out_dir)
-        elif sheet_name == "Locations":
-            count = process_locations(df, out_dir)
-        elif sheet_name == "Team":
-            count = process_team(df, out_dir)
-        elif sheet_name in ("Press/News Mentions", "PressNews Mentions"):
-            count = process_press(df, out_dir)
-        elif sheet_name == "Awards & Certifications":
-            count = process_awards(df, out_dir)
-        elif sheet_name == "Case Studies":
-            count = process_case_studies(df, out_dir)
-        else:
-            print(f"⚠️ No handler for sheet '{sheet_name}' — skipping")
-            count = 0
+        ensure_dir(out_dir)
+        try:
+            count = handler(df, out_dir)
+            log(f"📊 Total processed in '{sheet_name}': {count} items")
+            total += count
+        except Exception as e:
+            # Fail fast with clear context
+            log(f"❌ Error while processing sheet '{sheet_name}': {e}")
+            raise
 
-        print(f"📊 Total processed in '{sheet_name}': {count} items")
-        total += count
-
-    print(f"\n🎉 All files generated successfully. Total items: {total}")
+    log(f"\n🎉 All files generated successfully. Total items: {total}")
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Generate schema files from Excel (overwrite existing, no duplicates).")
-    parser.add_argument("--input", type=str, default="templates/AI-Visibility-Master-Template.xlsx",
-                        help="Path to input Excel file")
+    parser = argparse.ArgumentParser(description='Generate schema files from Excel.')
+    parser.add_argument('--input', type=str, default='templates/AI-Visibility-Master-Template.xlsx',
+                        help='Path to input Excel file')
     args = parser.parse_args()
     main(args.input)
