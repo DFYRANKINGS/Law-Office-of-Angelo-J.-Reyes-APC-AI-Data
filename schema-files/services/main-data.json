@@ -1,0 +1,15 @@
+{
+  "entity_name": "Law Office of Angelo J. Reyes, APC",
+  "service_id": 1,
+  "title": "Personal Injury",
+  "category": "Injury Law",
+  "description": "Representation for victims of car, motorcycle, trucking, slip-and-fall, premises liability, wrongful death, catastrophic injuries; negotiation and trial advocacy for maximum recovery.",
+  "price_range": "contingency fee",
+  "slug": "personal-injury",
+  "featured": "yes",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
+  "service_area_radius_miles": null
+}
