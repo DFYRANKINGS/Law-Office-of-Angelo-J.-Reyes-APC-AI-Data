@@ -3,23 +3,66 @@ import pandas as pd
 import json
 import re
 import sys
+from pathlib import Path
+from hashlib import md5
+
+# ---------------------------
+# Helpers
+# ---------------------------
+MANIFEST_PATH = Path("ai-generated-manifest.txt")
 
 def slugify(text):
-    """Generate clean, URL-friendly slug from text"""
-    if not text:
+    if text is None:
         return "untitled"
-    text = re.sub(r'[^a-zA-Z0-9\s-]', '', str(text))
+    text = str(text)
+    text = re.sub(r'[^a-zA-Z0-9\s-]', '', text)
     text = re.sub(r'[\s]+', '-', text.strip().lower())
     return text or "untitled"
 
+def stable_key(row, candidates):
+    """Return the first non-empty candidate as a stable key; else hash of the row."""
+    for c in candidates:
+        if c in row and pd.notna(row[c]) and str(row[c]).strip():
+            return str(row[c]).strip()
+    # last resort: deterministic hash of the row (order-independent)
+    payload = {k:str(row[k]) for k in sorted(row.index) if pd.notna(row[k])}
+    return md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+
+def write_text_atomic(text: str, path: Path, manifest: list):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)  # atomic move (overwrite if exists)
+    manifest.append(str(path))
+
+def write_json_atomic(obj: dict, path: Path, manifest: list):
+    write_text_atomic(json.dumps(obj, ensure_ascii=False, indent=2), path, manifest)
+
+def clean_previous_outputs():
+    if MANIFEST_PATH.exists():
+        lines = MANIFEST_PATH.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            p = Path(line.strip())
+            try:
+                if p.is_file():
+                    p.unlink()
+            except Exception:
+                pass
+        MANIFEST_PATH.unlink(missing_ok=True)
+
+def save_manifest(paths: list[str]):
+    MANIFEST_PATH.write_text("\n".join(paths), encoding="utf-8")
+
+# ---------------------------
+# Main generator
+# ---------------------------
 def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
     print(f"📂 Opening Excel file: {input_file}")
-    
+
     if not os.path.exists(input_file):
         print(f"❌ FATAL: Excel file not found at {input_file}")
         sys.exit(1)
-    else:
-        print(f"✅ Excel file confirmed at: {input_file}")
+    print(f"✅ Excel file confirmed at: {input_file}")
 
     try:
         xlsx = pd.ExcelFile(input_file)
@@ -28,7 +71,10 @@ def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
         print(f"❌ Failed to load Excel file: {e}")
         sys.exit(1)
 
-    # Map your actual sheet names to output dirs
+    # Only remove files we generated last time
+    clean_previous_outputs()
+    manifest: list[str] = []
+
     sheet_config = {
         "entity_info": "schemas/organization",
         "Services": "schemas/services",
@@ -40,7 +86,7 @@ def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
         "Team": "schemas/team",
         "Awards & Certifications": "schemas/awards",
         "Press/News Mentions": "schemas/press",
-        "Case Studies": "schemas/case-studies"
+        "Case Studies": "schemas/case-studies",
     }
 
     for sheet_name in xlsx.sheet_names:
@@ -50,8 +96,6 @@ def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
 
         print(f"\n📄 Processing sheet: {sheet_name}")
         df = xlsx.parse(sheet_name)
-        
-        # CLEAN COLUMN NAMES — strip whitespace
         df.columns = df.columns.str.strip()
         print(f"🧹 Cleaned column names: {list(df.columns)}")
 
@@ -59,10 +103,11 @@ def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
             print(f"⚠️ Sheet '{sheet_name}' is empty — skipping")
             continue
 
-        output_dir = sheet_config[sheet_name]
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"📁 Output directory: {output_dir}")
+        out_dir = Path(sheet_config[sheet_name])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"📁 Output directory: {out_dir}")
 
+        seen_keys = set()
         processed_count = 0
 
         for idx, row in df.iterrows():
@@ -70,203 +115,152 @@ def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
             if row.dropna().empty:
                 continue
 
-            # HELP ARTICLES — SPECIAL HANDLING
+            # Normalize row as dict of primitives/strings for JSON
+            norm = {}
+            for col in df.columns:
+                val = row[col]
+                if pd.isna(val):
+                    continue
+                if hasattr(val, "item"):
+                    val = val.item()
+                norm[col] = val
+
+            # ---------- HELP ARTICLES (markdown) ----------
             if sheet_name == "Help Articles":
-                title = str(row.get('title', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-                content = str(row.get('article', '')).strip()  # ← Uses 'article' column
+                title = str(norm.get("title", "")).strip()
+                slug = str(norm.get("slug", "")).strip() or slugify(title or f"article-{idx+1}")
+                body = str(norm.get("article", "")).strip()
 
-                if not slug:
-                    slug = slugify(title) if title else f"article-{idx+1}"
+                # de-dupe per run
+                key = slug
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
 
-                base_slug = slug
-                counter = 1
-                filename = f"{slug}.md"
-                filepath = os.path.join(output_dir, filename)
+                path = out_dir / f"{slug}.md"
+                fm = ["---"]
+                if title:
+                    fm.append(f"title: {title}")
+                fm.append(f"slug: {slug}")
+                fm.append("---\n")
+                md = "\n".join(fm) + body
+                write_text_atomic(md, path, manifest)
+                print(f"✅ Generated: {path}")
+                processed_count += 1
+                continue
 
-                while os.path.exists(filepath):
-                    filename = f"{base_slug}-{counter}.md"
-                    filepath = os.path.join(output_dir, filename)
-                    counter += 1
+            # ---------- FAQs ----------
+            if sheet_name == "FAQs":
+                # Prefer explicit ids/slug; fall back to question text
+                key = stable_key(norm, ["faq_id", "slug", "question"])
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
 
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write("---\n")
-                        if title:
-                            f.write(f"title: {title}\n")
-                        f.write(f"slug: {slug}\n")
-                        f.write("---\n\n")
-                        f.write(content)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
+                # Slug: prefer provided slug else from question or key
+                s = str(norm.get("slug", "")).strip() or slugify(norm.get("question", key))
+                path = out_dir / f"{s}.json"
 
-            # FAQs
-            elif sheet_name == "FAQs":
-                question = str(row.get('question', '')).strip()
-                answer = str(row.get('answer', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-
-                if not question:
-                    question = f"Untitled FAQ {idx+1}"
-
-                if not slug:
-                    slug = slugify(question)
-
-                safe_id = slug
-                base_id = safe_id
-                counter = 1
-                filename = f"{safe_id}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                while os.path.exists(filepath):
-                    filename = f"{base_id}-{counter}.json"
-                    filepath = os.path.join(output_dir, filename)
-                    counter += 1
-
-                item_data = {
-                    "question": question,
-                    "answer": answer
+                item = {
+                    "question": str(norm.get("question", "")).strip() or f"Untitled FAQ {idx+1}",
+                    "answer": str(norm.get("answer", "")).strip(),
                 }
+                write_json_atomic(item, path, manifest)
+                print(f"✅ Generated: {path}")
+                processed_count += 1
+                continue
 
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
+            # ---------- Services ----------
+            if sheet_name == "Services":
+                key = stable_key(norm, ["service_id", "slug", "service_name", "name"])
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
 
-            # SERVICES
-            elif sheet_name == "Services":
-                service_name = str(row.get('service_name', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-                description = str(row.get('description', '')).strip()
-                price_range = str(row.get('price_range', '')).strip()
-                license_number = str(row.get('license_number', '')).strip()
-                bar_number = str(row.get('bar_number', '')).strip()
-                npi_number = str(row.get('npi_number', '')).strip()
-                certification_body = str(row.get('certification_body', '')).strip()
+                slug_val = str(norm.get("slug", "")).strip() or slugify(norm.get("service_name", norm.get("name", key)))
+                path = out_dir / f"{slug_val}.json"
 
-                if not service_name:
-                    service_name = f"Service {idx+1}"
-
-                if not slug:
-                    slug = slugify(service_name)
-
-                filename = f"{slug}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                item_data = {
-                    "name": service_name,
-                    "description": description,
-                    "priceRange": price_range,
+                item = {
+                    "name": str(norm.get("service_name", norm.get("name", f"Service {idx+1}"))).strip(),
+                    "description": str(norm.get("description", "")).strip(),
+                    "priceRange": str(norm.get("price_range", "")).strip(),
                 }
+                if str(norm.get("license_number", "")).strip():
+                    item["license"] = str(norm["license_number"]).strip()
+                if str(norm.get("bar_number", "")).strip():
+                    item["barNumber"] = str(norm["bar_number"]).strip()
+                if str(norm.get("npi_number", "")).strip():
+                    item["npiNumber"] = str(norm["npi_number"]).strip()
+                if str(norm.get("certification_body", "")).strip():
+                    item["certification"] = str(norm["certification_body"]).strip()
 
-                if license_number:
-                    item_data["license"] = license_number
-                if bar_number:
-                    item_data["barNumber"] = bar_number
-                if npi_number:
-                    item_data["npiNumber"] = npi_number
-                if certification_body:
-                    item_data["certification"] = certification_body
+                write_json_atomic(item, path, manifest)
+                print(f"✅ Generated: {path}")
+                processed_count += 1
+                continue
 
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
+            # ---------- Team ----------
+            if sheet_name == "Team":
+                key = stable_key(norm, ["team_id", "member_id", "slug", "member_name", "name"])
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
 
-            # TEAM
-            elif sheet_name == "Team":
-                member_name = str(row.get('member_name', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-                role = str(row.get('role', '')).strip()
-                bio = str(row.get('bio', '')).strip()
-                license_number = str(row.get('license_number', '')).strip()
-                bar_number = str(row.get('bar_number', '')).strip()
-                npi_number = str(row.get('npi_number', '')).strip()
+                slug_val = str(norm.get("slug", "")).strip() or slugify(norm.get("member_name", norm.get("name", key)))
+                path = out_dir / f"{slug_val}.json"
 
-                if not member_name:
-                    member_name = f"Member {idx+1}"
-
-                if not slug:
-                    slug = slugify(member_name)
-
-                filename = f"{slug}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                item_data = {
-                    "name": member_name,
-                    "role": role,
-                    "description": bio,
+                item = {
+                    "name": str(norm.get("member_name", norm.get("name", f"Member {idx+1}"))).strip(),
+                    "role": str(norm.get("role", "")).strip(),
+                    "description": str(norm.get("bio", "")).strip(),
                 }
+                if str(norm.get("license_number", "")).strip():
+                    item["license"] = str(norm["license_number"]).strip()
+                if str(norm.get("bar_number", "")).strip():
+                    item["barNumber"] = str(norm["bar_number"]).strip()
+                if str(norm.get("npi_number", "")).strip():
+                    item["npiNumber"] = str(norm["npi_number"]).strip()
 
-                if license_number:
-                    item_data["license"] = license_number
-                if bar_number:
-                    item_data["barNumber"] = bar_number
-                if npi_number:
-                    item_data["npiNumber"] = npi_number
+                write_json_atomic(item, path, manifest)
+                print(f"✅ Generated: {path}")
+                processed_count += 1
+                continue
 
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
+            # ---------- Generic handler for other sheets ----------
+            # Choose a stable key in priority order per sheet type
+            key_candidates = {
+                "Products": ["product_id", "slug", "name", "title"],
+                "Reviews": ["review_id", "slug", "customer_name", "name", "title"],
+                "Locations": ["location_id", "slug", "location_name", "entity_name", "name"],
+                "Awards & Certifications": ["award_id", "slug", "name", "title"],
+                "Press/News Mentions": ["press_id", "slug", "title", "name"],
+                "Case Studies": ["case_id", "slug", "title", "name"],
+                "entity_info": ["entity_id", "slug", "entity_name", "name", "title"],
+            }
+            kc = key_candidates.get(sheet_name, ["slug", "name", "title"])
+            key = stable_key(norm, kc)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
 
-            # ALL OTHER SHEETS
-            else:
-                id_field = None
-                for key in ['service_id', 'product_id', 'faq_id', 'review_id', 'location_id', 'case_id', 'slug', 'name', 'title']:
-                    if key in row and pd.notna(row[key]):
-                        id_field = str(row[key]).strip()
-                        break
-                
-                if not id_field:
-                    id_field = f"item-{idx+1}"
+            slug_val = str(norm.get("slug", "")).strip() or slugify(norm.get("name", norm.get("title", key)))
+            # For Locations you may prefer id-prefix to ensure uniqueness across similarly named branches
+            if sheet_name == "Locations" and "location_id" in norm and str(norm["location_id"]).strip():
+                slug_val = f"{str(norm['location_id']).strip()}-{slugify(norm.get('location_name', norm.get('entity_name', slug_val)))}"
 
-                safe_id = slugify(id_field)
-                base_id = safe_id
-                counter = 1
-                filename = f"{safe_id}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                while os.path.exists(filepath):
-                    filename = f"{base_id}-{counter}.json"
-                    filepath = os.path.join(output_dir, filename)
-                    counter += 1
-
-                item_data = {}
-                for col in df.columns:
-                    value = row[col]
-                    if pd.isna(value):
-                        continue
-                    if hasattr(value, 'item'):
-                        value = value.item()
-                    item_data[col] = value
-
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False, default=str)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
+            path = out_dir / f"{slug_val}.json"
+            write_json_atomic(norm, path, manifest)
+            print(f"✅ Generated: {path}")
+            processed_count += 1
 
         print(f"📊 Total processed in '{sheet_name}': {processed_count} items")
 
-    print("\n🎉 All files generated successfully.")
+    save_manifest(manifest)
+    print("\n🎉 All files generated successfully (idempotent).")
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Generate schema files from Excel.')
+    parser = argparse.ArgumentParser(description='Generate schema files from Excel (idempotent).')
     parser.add_argument('--input', type=str, default='templates/AI-Visibility-Master-Template.xlsx',
                         help='Path to input Excel file')
     args = parser.parse_args()
