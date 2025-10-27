@@ -1,273 +1,115 @@
+# ai-generators/generate_files_from_xlsx.py
 import os
-import pandas as pd
-import json
-import re
 import sys
+import re
+import json
+import math
+import argparse
+from datetime import datetime, date
+from typing import Any, Dict, List
 
-def slugify(text):
-    """Generate clean, URL-friendly slug from text"""
-    if not text:
+import pandas as pd
+import numpy as np
+
+# =========================
+# Helpers
+# =========================
+
+def slugify(text: Any) -> str:
+    """Generate clean, URL-friendly slug from text."""
+    if text is None:
         return "untitled"
-    text = re.sub(r'[^a-zA-Z0-9\s-]', '', str(text))
-    text = re.sub(r'[\s]+', '-', text.strip().lower())
-    return text or "untitled"
+    s = str(text).strip().lower()
+    s = re.sub(r'[^a-z0-9\s-]', '', s)
+    s = re.sub(r'\s+', '-', s).strip('-')
+    return s or "untitled"
 
-def main(input_file="templates/AI-Visibility-Master-Template.xlsx"):
-    print(f"📂 Opening Excel file: {input_file}")
-    
-    if not os.path.exists(input_file):
-        print(f"❌ FATAL: Excel file not found at {input_file}")
-        sys.exit(1)
-    else:
-        print(f"✅ Excel file confirmed at: {input_file}")
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
 
-    try:
-        xlsx = pd.ExcelFile(input_file)
-        print(f"📄 Available sheets in workbook: {xlsx.sheet_names}")
-    except Exception as e:
-        print(f"❌ Failed to load Excel file: {e}")
-        sys.exit(1)
+def is_nanlike(v: Any) -> bool:
+    return v is None or (isinstance(v, float) and math.isnan(v)) or (isinstance(v, str) and v.strip() == "")
 
-    # Map your actual sheet names to output dirs
-    sheet_config = {
-        "entity_info": "schemas/organization",
-        "Services": "schemas/services",
-        "Products": "schemas/products",
-        "FAQs": "schemas/faqs",
-        "Help Articles": "schemas/help-articles",
-        "Reviews": "schemas/reviews",
-        "Locations": "schemas/locations",
-        "Team": "schemas/team",
-        "Awards & Certifications": "schemas/awards",
-        "Press/News Mentions": "schemas/press",
-        "Case Studies": "schemas/case-studies"
-    }
+def to_json_compatible(value: Any) -> Any:
+    """Convert Pandas/NumPy/Timestamp objects to JSON-safe primitives."""
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        # ISO date or datetime
+        # If timestamp has time component:
+        try:
+            if isinstance(value, pd.Timestamp):
+                value = value.to_pydatetime()
+        except Exception:
+            pass
+        # If midnight and no tz, keep date-only string
+        try:
+            if isinstance(value, datetime) and (value.hour != 0 or value.minute != 0 or value.second != 0):
+                return value.isoformat()
+            if isinstance(value, (datetime, date)):
+                return value.date().isoformat() if isinstance(value, datetime) else value.isoformat()
+        except Exception:
+            return str(value)
 
-    for sheet_name in xlsx.sheet_names:
-        if sheet_name not in sheet_config:
-            print(f"⚠️ Skipping unsupported sheet: {sheet_name}")
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        v = float(value)
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    if isinstance(value, (np.bool_)):
+        return bool(value)
+
+    if isinstance(value, pd.Series):
+        return to_json_compatible(value.to_dict())
+
+    if isinstance(value, dict):
+        return {str(k): to_json_compatible(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [to_json_compatible(v) for v in value]
+
+    return value
+
+def row_to_clean_dict(row: pd.Series) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for col in row.index:
+        val = row[col]
+        if pd.isna(val):
             continue
-
-        print(f"\n📄 Processing sheet: {sheet_name}")
-        df = xlsx.parse(sheet_name)
-        
-        # CLEAN COLUMN NAMES — strip whitespace
-        df.columns = df.columns.str.strip()
-        print(f"🧹 Cleaned column names: {list(df.columns)}")
-
-        if df.empty:
-            print(f"⚠️ Sheet '{sheet_name}' is empty — skipping")
+        # Convert Excel numbers that are actually ints
+        if hasattr(val, "item"):
+            try:
+                val = val.item()
+            except Exception:
+                pass
+        val = to_json_compatible(val)
+        if val is None:
             continue
+        out[str(col)] = val
+    return out
 
-        output_dir = sheet_config[sheet_name]
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"📁 Output directory: {output_dir}")
+def write_json(path: str, payload: Dict[str, Any]) -> None:
+    ensure_dir(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
 
-        processed_count = 0
-
-        for idx, row in df.iterrows():
-            # Skip completely empty rows
-            if row.dropna().empty:
-                continue
-
-            # HELP ARTICLES — SPECIAL HANDLING
-            if sheet_name == "Help Articles":
-                title = str(row.get('title', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-                content = str(row.get('article', '')).strip()  # ← Uses 'article' column
-
-                if not slug:
-                    slug = slugify(title) if title else f"article-{idx+1}"
-
-                base_slug = slug
-                counter = 1
-                filename = f"{slug}.md"
-                filepath = os.path.join(output_dir, filename)
-
-                while os.path.exists(filepath):
-                    filename = f"{base_slug}-{counter}.md"
-                    filepath = os.path.join(output_dir, filename)
-                    counter += 1
-
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write("---\n")
-                        if title:
-                            f.write(f"title: {title}\n")
-                        f.write(f"slug: {slug}\n")
-                        f.write("---\n\n")
-                        f.write(content)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
-
-            # FAQs
-            elif sheet_name == "FAQs":
-                question = str(row.get('question', '')).strip()
-                answer = str(row.get('answer', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-
-                if not question:
-                    question = f"Untitled FAQ {idx+1}"
-
-                if not slug:
-                    slug = slugify(question)
-
-                safe_id = slug
-                base_id = safe_id
-                counter = 1
-                filename = f"{safe_id}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                while os.path.exists(filepath):
-                    filename = f"{base_id}-{counter}.json"
-                    filepath = os.path.join(output_dir, filename)
-                    counter += 1
-
-                item_data = {
-                    "question": question,
-                    "answer": answer
-                }
-
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
-
-            # SERVICES
-            elif sheet_name == "Services":
-                service_name = str(row.get('service_name', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-                description = str(row.get('description', '')).strip()
-                price_range = str(row.get('price_range', '')).strip()
-                license_number = str(row.get('license_number', '')).strip()
-                bar_number = str(row.get('bar_number', '')).strip()
-                npi_number = str(row.get('npi_number', '')).strip()
-                certification_body = str(row.get('certification_body', '')).strip()
-
-                if not service_name:
-                    service_name = f"Service {idx+1}"
-
-                if not slug:
-                    slug = slugify(service_name)
-
-                filename = f"{slug}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                item_data = {
-                    "name": service_name,
-                    "description": description,
-                    "priceRange": price_range,
-                }
-
-                if license_number:
-                    item_data["license"] = license_number
-                if bar_number:
-                    item_data["barNumber"] = bar_number
-                if npi_number:
-                    item_data["npiNumber"] = npi_number
-                if certification_body:
-                    item_data["certification"] = certification_body
-
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
-
-            # TEAM
-            elif sheet_name == "Team":
-                member_name = str(row.get('member_name', '')).strip()
-                slug = str(row.get('slug', '')).strip()
-                role = str(row.get('role', '')).strip()
-                bio = str(row.get('bio', '')).strip()
-                license_number = str(row.get('license_number', '')).strip()
-                bar_number = str(row.get('bar_number', '')).strip()
-                npi_number = str(row.get('npi_number', '')).strip()
-
-                if not member_name:
-                    member_name = f"Member {idx+1}"
-
-                if not slug:
-                    slug = slugify(member_name)
-
-                filename = f"{slug}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                item_data = {
-                    "name": member_name,
-                    "role": role,
-                    "description": bio,
-                }
-
-                if license_number:
-                    item_data["license"] = license_number
-                if bar_number:
-                    item_data["barNumber"] = bar_number
-                if npi_number:
-                    item_data["npiNumber"] = npi_number
-
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
-
-            # ALL OTHER SHEETS
+def write_md_with_frontmatter(path: str, fm: Dict[str, Any], body: str) -> None:
+    ensure_dir(os.path.dirname(path))
+    # Make frontmatter strings JSON-safe
+    fm_clean = {k: to_json_compatible(v) for k, v in fm.items() if not is_nanlike(v)}
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("---\n")
+        for k, v in fm_clean.items():
+            # write simple YAML scalars/arrays
+            if isinstance(v, list):
+                f.write(f"{k}:\n")
+                for item in v:
+                    f.write(f"  - {item}\n")
             else:
-                id_field = None
-                for key in ['service_id', 'product_id', 'faq_id', 'review_id', 'location_id', 'case_id', 'slug', 'name', 'title']:
-                    if key in row and pd.notna(row[key]):
-                        id_field = str(row[key]).strip()
-                        break
-                
-                if not id_field:
-                    id_field = f"item-{idx+1}"
+                f.write(f"{k}: {v}\n")
+        f.write("---\n\n")
+        f.write(body or "")
 
-                safe_id = slugify(id_field)
-                base_id = safe_id
-                counter = 1
-                filename = f"{safe_id}.json"
-                filepath = os.path.join(output_dir, filename)
-
-                while os.path.exists(filepath):
-                    filename = f"{base_id}-{counter}.json"
-                    filepath = os.path.join(output_dir, filename)
-                    counter += 1
-
-                item_data = {}
-                for col in df.columns:
-                    value = row[col]
-                    if pd.isna(value):
-                        continue
-                    if hasattr(value, 'item'):
-                        value = value.item()
-                    item_data[col] = value
-
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        json.dump(item_data, f, indent=2, ensure_ascii=False, default=str)
-                    print(f"✅ Generated: {filepath}")
-                    processed_count += 1
-                except Exception as e:
-                    print(f"❌ Failed to write {filepath}: {e}")
-
-        print(f"📊 Total processed in '{sheet_name}': {processed_count} items")
-
-    print("\n🎉 All files generated successfully.")
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description='Generate schema files from Excel.')
-    parser.add_argument('--input', type=str, default='templates/AI-Visibility-Master-Template.xlsx',
-                        help='Path to input Excel file')
-    args = parser.parse_args()
-    main(args.input)
+def cleaned_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip]()
