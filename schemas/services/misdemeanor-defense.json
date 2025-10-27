@@ -1,0 +1,9 @@
+{
+  "name": "Service 6",
+  "description": "Representation for minor criminal charges such as petty theft, simple assault, public intoxication, traffic misdemeanors, probation violation, etc.",
+  "priceRange": "flat/varies*",
+  "license": "325508",
+  "barNumber": "325508",
+  "npiNumber": "California State Bar",
+  "certification": "100"
+}
