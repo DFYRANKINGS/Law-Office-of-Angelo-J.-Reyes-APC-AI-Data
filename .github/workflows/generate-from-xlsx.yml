@@ -17,6 +17,13 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
+      # Keep local tree perfectly in sync to avoid non-fast-forward on push
+      - name: Sync with origin/main (prevent non-fast-forward)
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+          git status --short
+
       - name: DEBUG - Print Token Length (Safe)
         run: |
           TOKEN_LENGTH=${#GH_TOKEN}
@@ -59,6 +66,21 @@ jobs:
 
           echo "changed_xlsx=$CHANGED_FILES" >> $GITHUB_ENV
 
+      # Make sure the directories exist (no .gitkeep yet)
+      - name: Ensure schemas/ Directories Exist
+        run: |
+          mkdir -p schemas/organization \
+                   schemas/services \
+                   schemas/products \
+                   schemas/faqs \
+                   schemas/help-articles \
+                   schemas/reviews \
+                   schemas/locations \
+                   schemas/team \
+                   schemas/awards \
+                   schemas/press \
+                   schemas/case-studies
+
       - name: Process Each XLSX File
         if: env.changed_xlsx != ''
         run: |
@@ -72,44 +94,25 @@ jobs:
             fi
           done <<< "${{ env.changed_xlsx }}"
 
-      - name: Ensure schemas/ Directories Exist
+      # If generators created real files, wipe any stale .gitkeep that may exist
+      - name: Remove stale .gitkeep placeholders (if any)
         run: |
-          mkdir -p schemas/organization
-          mkdir -p schemas/services
-          mkdir -p schemas/products
-          mkdir -p schemas/faqs
-          mkdir -p schemas/help-articles
-          mkdir -p schemas/reviews
-          mkdir -p schemas/locations
-          mkdir -p schemas/team
-          mkdir -p schemas/awards
-          mkdir -p schemas/press
-          mkdir -p schemas/case-studies
-          touch schemas/organization/.gitkeep
-          touch schemas/services/.gitkeep
-          touch schemas/products/.gitkeep
-          touch schemas/faqs/.gitkeep
-          touch schemas/help-articles/.gitkeep
-          touch schemas/reviews/.gitkeep
-          touch schemas/locations/.gitkeep
-          touch schemas/team/.gitkeep
-          touch schemas/awards/.gitkeep
-          touch schemas/press/.gitkeep
-          touch schemas/case-studies/.gitkeep
+          find schemas -type f -name ".gitkeep" -delete || true
 
       - name: Generate or Update Sitemap (FORCE UPDATE)
         run: |
           python generate_sitemaps.py
+          # Ensure file exists even if script is a no-op
           touch ai-sitemap.xml
 
       - name: Verify All Generated Files Exist
         run: |
-          echo "🔍 VERIFYING OUTPUTS — Listing all generated files:"
-          echo "=================================================="
-          find schema-files -type f KATEX_INLINE_OPEN -name "*.json" -o -name "*.yaml" -o -name "*.md" -o -name "*.llm" KATEX_INLINE_CLOSE | sort
+          echo "🔍 VERIFYING OUTPUTS — Listing generated files under schemas/:"
+          echo "=============================================================="
+          find schemas -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.md" -o -name "*.llm" \) | sort || true
           echo ""
           echo "📄 ai-sitemap.xml last modified:"
-          ls -la ai-sitemap.xml
+          ls -la ai-sitemap.xml || true
 
       - name: Configure Git Identity
         run: |
@@ -120,13 +123,22 @@ jobs:
         run: |
           git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git
 
-      - name: FORCE ADD AND COMMIT EVERYTHING
+      # Rebase in case another workflow pushed during generation
+      - name: Rebase onto latest before committing
+        run: |
+          git fetch origin ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }} || true
+
+      - name: ADD AND COMMIT CHANGES
         run: |
           git add --all
           echo "📦 STAGED CHANGES:"
           git status --short
-          git commit -m "🤖 Auto-generate schema + sitemap [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "✅ No changes, still pushing"
-          echo "🚀 PUSHING TO: ${{ github.ref_name }}"
+          git commit -m "🤖 Auto-generate schema + sitemap [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "✅ No changes to commit"
+
+      - name: PUSH CHANGES
+        run: |
+          echo "🚀 Pushing to: ${{ github.ref_name }}"
           git push origin ${{ github.ref_name }}
 
       - name: DEBUG - Verify Push Result
@@ -135,5 +147,3 @@ jobs:
           git fetch origin ${{ github.ref_name }}
           git log -1 origin/${{ github.ref_name }} --oneline
           echo "✅ If commit above matches, SUCCESS! Files are live at Raw URLs."
-
-
