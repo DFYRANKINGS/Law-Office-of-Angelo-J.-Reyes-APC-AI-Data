@@ -700,125 +700,342 @@ def generate_index_page():
     return True
 
 def generate_about_page():
-    candidate_dirs = ["schemas/organization", "schemas/organizations", "schemas/company", "schemas/entity", "schemas/business"]
-    org_dir = next((d for d in candidate_dirs if os.path.isdir(d)), None)
+    """
+    Build a rich About page that summarizes what the firm does:
+    - Pulls org details (description, mission, vision, website, sameAs)
+    - Counts services / FAQs / help articles / reviews / team / locations
+    - Shows practice area previews, locations, team snapshot, press/awards, profiles
+    - Emits Organization JSON-LD for AI/SEO
+    """
+    # --- helpers ---
+    def _load_first_org():
+        candidate_dirs = [
+            "schemas/organization", "schemas/organizations",
+            "schemas/company", "schemas/entity", "schemas/business",
+        ]
+        for d in candidate_dirs:
+            if not os.path.isdir(d): 
+                continue
+            for fn in os.listdir(d):
+                if fn.lower().endswith((".json", ".yaml", ".yml")):
+                    recs = load_data(os.path.join(d, fn))
+                    if recs:
+                        org = recs[0] if isinstance(recs, list) else recs
+                        if isinstance(org, dict):
+                            return org
+        return {}
 
-    org = None
-    picked_path = None
-    if org_dir:
-        cand = [f for f in os.listdir(org_dir) if f.endswith(('.json', '.yaml', '.yml'))]
-        if cand:
-            picked_path = os.path.join(org_dir, cand[0])
-            data = load_data(picked_path)
-            if data:
-                org = data[0] if isinstance(data, list) else data
+    def _gather_titles_from_dir(root_dir, key_list=None, nested_list_key=None, max_items=None):
+        """Collect human titles from JSON/YAML in a folder."""
+        titles = []
+        if not os.path.isdir(root_dir):
+            return titles
+        for fn in sorted(os.listdir(root_dir)):
+            if not fn.lower().endswith((".json", ".yaml", ".yml")):
+                continue
+            for rec in (load_data(os.path.join(root_dir, fn)) or []):
+                if not isinstance(rec, dict):
+                    continue
+                if nested_list_key and isinstance(rec.get(nested_list_key), list):
+                    for sub in rec[nested_list_key]:
+                        if isinstance(sub, dict):
+                            t = _first_nonempty(*(sub.get(k) for k in (key_list or [])))
+                            if _is_placeholder_title(t):
+                                t = None
+                            titles.append(t or _title_from_filename(fn))
+                else:
+                    t = _first_nonempty(*(rec.get(k) for k in (key_list or [])))
+                    if _is_placeholder_title(t):
+                        t = None
+                    titles.append(t or _title_from_filename(fn))
+        # de-dup preserve order
+        seen, out = set(), []
+        for t in titles:
+            if t and t.lower() not in seen:
+                out.append(t)
+                seen.add(t.lower())
+        return out[:max_items] if max_items else out
 
-    services_dir = "schemas/services"
-    locations_dir = "schemas/locations"
+    def _count_records(root_dir):
+        if not os.path.isdir(root_dir):
+            return 0
+        count = 0
+        for fn in os.listdir(root_dir):
+            if not fn.lower().endswith((".json", ".yaml", ".yml", ".md", ".llm")):
+                continue
+            recs = load_data(os.path.join(root_dir, fn)) if fn.lower().endswith((".json", ".yaml", ".yml")) else [True]
+            if isinstance(recs, list):
+                count += len(recs)
+            else:
+                count += 1
+        return count
+
+    def _collect_sameas(*dicts):
+        links = []
+        for d in dicts:
+            if isinstance(d, dict):
+                links += _as_list(d.get("sameAs") or d.get("same_as") or d.get("social") or d.get("social_links"))
+        # de-dup
+        seen, out = set(), []
+        for u in links:
+            if u and u not in seen:
+                out.append(u)
+                seen.add(u)
+        return out
+
+    # --- Load org and roll-up facts ---
+    org = _load_first_org()
+    site_name = _first_nonempty(org.get("entity_name"), org.get("name")) or (load_org_meta().get("name") or "Our Firm")
+    logo_url  = _first_nonempty(org.get("logo_url"), org.get("logo"))
+    website   = _first_nonempty(org.get("website"), org.get("url"))
+    desc      = _first_nonempty(org.get("description"))
+    mission   = _first_nonempty(org.get("mission"))
+    vision    = _first_nonempty(org.get("vision"))
+    phone     = _first_nonempty(org.get("phone"), _alias_get(org, "phone"))
+    email     = _first_nonempty(org.get("email"), _alias_get(org, "email"))
+    sameas    = _collect_sameas(org)
+
+    # Services preview (titles)
+    service_titles = _gather_titles_from_dir("schemas/services",
+                                             key_list=["title","service_name","name","headline","category","type","label"],
+                                             nested_list_key="services",
+                                             max_items=12)
+    services_count = _count_records("schemas/services")
+
+    # FAQs / Help Articles
+    faqs_count  = _count_records("schemas/faqs")
+    help_count  = len([f for f in os.listdir("schemas/help-articles")] ) if os.path.isdir("schemas/help-articles") else 0
+
+    # Reviews (avg + count)
     reviews_dir = "schemas/reviews"
-
-    # Count services
-    service_titles = []
-    if os.path.isdir(services_dir):
-        for file in os.listdir(services_dir):
-            if not file.endswith((".json", ".yaml", ".yml")):
-                continue
-            for rec in (load_data(os.path.join(services_dir, file)) or []):
-                if isinstance(rec, dict) and isinstance(rec.get("services"), list):
-                    for s in rec["services"]:
-                        if isinstance(s, dict):
-                            title = _first_nonempty(s.get("title"), s.get("service_name"), s.get("name"))
-                            if _is_placeholder_title(title): title = None
-                            service_titles.append(title or _title_from_filename(file))
-                elif isinstance(rec, dict):
-                    title = _first_nonempty(rec.get("title"), rec.get("service_name"), rec.get("name"))
-                    if _is_placeholder_title(title): title = None
-                    service_titles.append(title or _title_from_filename(file))
-    service_count = len(service_titles)
-
-    # Locations / service areas & contact
-    service_areas = set()
-    phone = email = ""
-    if os.path.isdir(locations_dir):
-        for file in os.listdir(locations_dir):
-            if not file.endswith((".json", ".yaml", ".yml")):
-                continue
-            for loc in (load_data(os.path.join(locations_dir, file)) or []):
-                if not isinstance(loc, dict): continue
-                for area in _as_list(loc.get("service_areas") or loc.get("areas")):
-                    service_areas.add(area)
-                if not phone: phone = _first_nonempty(_alias_get(loc, "phone"))
-                if not email: email = _first_nonempty(_alias_get(loc, "email"))
-
-    # Reviews: average rating
+    review_count = 0
     ratings = []
     if os.path.isdir(reviews_dir):
-        for file in os.listdir(reviews_dir):
-            if not file.endswith((".json", ".yaml", ".yml")): continue
-            for rev in (load_data(os.path.join(reviews_dir, file)) or []):
-                if isinstance(rev, dict):
+        for fn in os.listdir(reviews_dir):
+            if not fn.lower().endswith((".json", ".yaml", ".yml")): 
+                continue
+            for rec in (load_data(os.path.join(reviews_dir, fn)) or []):
+                if isinstance(rec, dict):
+                    review_count += 1
                     try:
-                        r = float(rev.get("rating"))
+                        r = float(rec.get("rating"))
                         if r > 0: ratings.append(r)
                     except Exception:
                         pass
     avg_rating = (sum(ratings) / len(ratings)) if ratings else None
 
-    if not org:
-        repo_slug = os.getenv("GITHUB_REPOSITORY") or ""
-        fallback_name = repo_slug.split("/", 1)[-1].replace("-", " ").title() if repo_slug else "Our Company"
-        org = {"entity_name": fallback_name, "name": fallback_name, "description": "", "mission": "", "vision": "", "logo_url": "", "website": ""}
+    # Team / Locations / Awards / Press / Case Studies
+    team_count   = _count_records("schemas/team")
+    loc_count    = _count_records("schemas/locations")
+    awards_count = _count_records("schemas/awards")
+    press_count  = _count_records("schemas/press")
+    cases_count  = _count_records("schemas/case-studies")
+
+    # Derive service areas & a primary address (first location)
+    service_areas = set()
+    address_str = ""
+    if os.path.isdir("schemas/locations"):
+        for fn in os.listdir("schemas/locations"):
+            if not fn.lower().endswith((".json", ".yaml", ".yml")):
+                continue
+            for loc in (load_data(os.path.join("schemas/locations", fn)) or []):
+                if not isinstance(loc, dict): continue
+                for area in _as_list(loc.get("service_areas") or loc.get("areas") or loc.get("locations_served")):
+                    service_areas.add(area)
+                if not address_str:
+                    address_str = _format_address(loc.get("address"), loc)
+
+                # Also gather sameAs from locations if present
+                sameas = _collect_sameas({"sameAs": sameas}, loc)
+
+    # Fallback desc
+    if not desc:
+        desc = f"{site_name} is a results-driven law firm focused on client advocacy and outstanding outcomes."
+
+    # --- Build sections ---
+    toc = """
+    <nav class="card" aria-label="Page sections" style="margin-top:1rem">
+      <strong>On this page:</strong>
+      <ul style="margin:0.5rem 0 0; padding-left:1.2rem;">
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#practice-areas">Practice Areas</a></li>
+        <li><a href="#facts">Key Facts</a></li>
+        <li><a href="#locations">Locations & Hours</a></li>
+        <li><a href="#team">Team</a></li>
+        <li><a href="#reviews">Reviews</a></li>
+        <li><a href="#press-awards">Press & Awards</a></li>
+        <li><a href="#resources">Helpful Resources</a></li>
+        <li><a href="#profiles">Social & Profiles</a></li>
+        <li><a href="#contact">Contact</a></li>
+      </ul>
+    </nav>
+    """
 
     parts = []
-    display_name = _first_nonempty(org.get("entity_name"), org.get("name")) or "About Us"
-    logo_url = _first_nonempty(org.get("logo_url"), org.get("logo"))
+
+    # Header/logo
     if logo_url:
-        parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(display_name)}" style="max-height: 120px; margin-bottom: 2rem;">')
+        parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(site_name)}" style="max-height:120px;margin-bottom:1.25rem;border-radius:8px">')
 
-    desc = _first_nonempty(org.get("description")) or f"{display_name} is a professional firm serving our community with high-quality services and a client-first approach."
-    parts.append(f"<p>{escape_html(desc)}</p>")
+    # Overview
+    parts.append(f'<section id="overview" class="card"><h2>Overview</h2><p>{escape_html(desc)}</p>')
+    if mission:
+        parts.append(f"<h3>Our Mission</h3><p>{escape_html(mission)}</p>")
+    if vision:
+        parts.append(f"<h3>Our Vision</h3><p>{escape_html(vision)}</p>")
+    parts.append("</section>")
 
+    # Practice Areas preview
+    if service_titles:
+        areas_list = "".join(f"<li>{escape_html(t)}</li>" for t in service_titles)
+        parts.append(f"""
+        <section id="practice-areas" class="card">
+          <h2>Practice Areas</h2>
+          <p>We cover a broad spectrum of matters. Here’s a quick snapshot:</p>
+          <ul>{areas_list}</ul>
+          <p><a href="services.html">Browse all services ({services_count}) →</a></p>
+        </section>
+        """)
+
+    # Key Facts
     facts = []
-    facts.append(f"<strong>Services offered:</strong> {service_count}")
-    if avg_rating is not None:
-        stars = "★" * int(round(avg_rating)) + "☆" * (5 - int(round(avg_rating)))
-        facts.append(f"<strong>Average rating:</strong> {avg_rating:.1f} {stars}")
+    facts.append(f"<strong>Services:</strong> {services_count}")
+    facts.append(f"<strong>FAQs:</strong> {faqs_count}")
+    facts.append(f"<strong>Help Articles:</strong> {help_count}")
+    facts.append(f"<strong>Team Members:</strong> {team_count}")
+    facts.append(f"<strong>Locations:</strong> {loc_count}")
+    if review_count:
+        if avg_rating is not None:
+            stars = "★" * int(round(avg_rating)) + "☆" * (5 - int(round(avg_rating)))
+            facts.append(f"<strong>Reviews:</strong> {review_count} (avg {avg_rating:.1f}) {stars}")
+        else:
+            facts.append(f"<strong>Reviews:</strong> {review_count}")
+    if awards_count: facts.append(f"<strong>Awards/Certifications:</strong> {awards_count}")
+    if press_count:  facts.append(f"<strong>Press Mentions:</strong> {press_count}")
+    if cases_count:  facts.append(f"<strong>Case Studies:</strong> {cases_count}")
     if service_areas:
-        facts.append(f"<strong>Service areas:</strong> {escape_html(', '.join(sorted(list(service_areas))[:8]))}")
-    if phone:
-        facts.append(f"<strong>Phone:</strong> {escape_html(phone)}")
-    if email:
-        facts.append(f'<strong>Email:</strong> <a href="mailto:{escape_html(email)}">{escape_html(email)}</a>')
+        facts.append(f"<strong>Service Areas:</strong> {escape_html(', '.join(sorted(list(service_areas))[:12]))}")
 
-    parts.append('<div class="card"><h2>Facts at a Glance</h2><ul>' + "".join(f"<li>{row}</li>" for row in facts) + "</ul></div>")
+    parts.append('<section id="facts" class="card"><h2>Key Facts</h2><ul>' + "".join(f"<li>{row}</li>" for row in facts) + "</ul></section>")
 
-    if org.get("mission"):
-        parts.append(f"<h2>Our Mission</h2><p>{escape_html(org.get('mission'))}</p>")
-    if org.get("vision"):
-        parts.append(f"<h2>Our Vision</h2><p>{escape_html(org.get('vision'))}</p>")
+    # Locations & Hours (brief)
+    if address_str or loc_count:
+        hours_text = ""
+        # Try to extract hours from the first location again for display
+        if os.path.isdir("schemas/locations"):
+            for fn in os.listdir("schemas/locations"):
+                if not fn.lower().endswith((".json", ".yaml", ".yml")): continue
+                for loc in (load_data(os.path.join("schemas/locations", fn)) or []):
+                    if isinstance(loc, dict):
+                        hours_text = _extract_hours(loc)
+                        break
+                if hours_text: break
 
-    website = _first_nonempty(org.get("website"), org.get("url"))
-    same_as = _as_list(org.get("sameAs") or org.get("same_as"))
-    if website or same_as:
+        parts.append(f"""
+        <section id="locations" class="card">
+          <h2>Locations & Hours</h2>
+          {'<p><strong>Primary Address:</strong> ' + escape_html(address_str) + '</p>' if address_str else ''}
+          {('<p><strong>Hours:</strong> ' + escape_html(hours_text) + '</p>') if hours_text else ''}
+          <p><a href="contact.html">All contact details & map →</a></p>
+        </section>
+        """)
+
+    # Team snapshot
+    if team_count:
+        parts.append(f"""
+        <section id="team" class="card">
+          <h2>Team</h2>
+          <p>Dedicated professionals committed to client success. <a href="about.html#team">Learn more</a>.</p>
+          <p><em>Total team members:</em> {team_count}</p>
+        </section>
+        """)
+
+    # Reviews
+    if review_count:
+        parts.append(f"""
+        <section id="reviews" class="card">
+          <h2>Reviews</h2>
+          <p>Client feedback highlights our advocacy and outcomes.</p>
+          <p><a href="testimonials.html">Read testimonials →</a></p>
+        </section>
+        """)
+
+    # Press & Awards
+    if press_count or awards_count:
+        parts.append(f"""
+        <section id="press-awards" class="card">
+          <h2>Press & Awards</h2>
+          <ul>
+            {'<li><a href="press.html">Press mentions</a></li>' if press_count else ''}
+            {'<li><a href="awards.html">Awards & certifications</a></li>' if awards_count else ''}
+          </ul>
+        </section>
+        """)
+
+    # Helpful resources
+    if faqs_count or help_count:
+        parts.append(f"""
+        <section id="resources" class="card">
+          <h2>Helpful Resources</h2>
+          <ul>
+            {'<li><a href="faqs.html">Frequently Asked Questions</a></li>' if faqs_count else ''}
+            {'<li><a href="help.html">Help Center Articles</a></li>' if help_count else ''}
+          </ul>
+        </section>
+        """)
+
+    # Profiles / sameAs
+    if sameas or website:
         links = []
         if website:
             links.append(f'<li><a href="{escape_html(website)}" target="_blank" rel="nofollow">Website</a></li>')
-        for s in same_as[:12]:
+        for s in sameas[:24]:
             links.append(f'<li><a href="{escape_html(s)}" target="_blank" rel="nofollow">{escape_html(s)}</a></li>')
-        parts.append("<h2>Links</h2><ul>" + "".join(links) + "</ul>")
+        parts.append(f"""
+        <section id="profiles" class="card">
+          <h2>Social & Profiles</h2>
+          <ul>{''.join(links)}</ul>
+        </section>
+        """)
 
-    parts.append("""
-    <div class="card">
-        <h2>Ready to Talk?</h2>
-        <p>Have a project in mind or need guidance? We’re here to help.</p>
-        <p><a href="contact.html">Contact us</a> to get started.</p>
-    </div>
+    # Contact CTA
+    contact_bits = []
+    if phone: contact_bits.append(f"<strong>Phone:</strong> <a href='tel:{escape_html(phone)}'>{escape_html(phone)}</a>")
+    if email: contact_bits.append(f"<strong>Email:</strong> <a href='mailto:{escape_html(email)}'>{escape_html(email)}</a>")
+    parts.append(f"""
+    <section id="contact" class="card">
+      <h2>Ready to Talk?</h2>
+      <p>Have a matter on your mind? We’re here to help.</p>
+      <p>{' &nbsp;•&nbsp; '.join(contact_bits) if contact_bits else ''}</p>
+      <p><a href="contact.html">Contact us →</a></p>
+    </section>
     """)
 
-    with open("about.html", "w", encoding="utf-8") as f:
-        f.write(generate_page(display_name, "\n".join(parts)))
+    # Organization JSON-LD
+    json_ld = {
+        "@context": "https://schema.org",
+        "@type": "LegalService",
+        "name": site_name,
+        **({"url": website} if website else {}),
+        **({"logo": logo_url} if logo_url else {}),
+        **({"telephone": phone} if phone else {}),
+        **({"email": email} if email else {}),
+        **({"sameAs": sameas} if sameas else {}),
+    }
+    if address_str:
+        # basic text address (not structured parts because inputs vary)
+        json_ld["address"] = {"@type": "PostalAddress", "streetAddress": address_str}
 
-    print("✅ about.html generated")
+    content = (
+        toc +
+        "\n".join(parts) +
+        f'\n<script type="application/ld+json">{json.dumps(json_ld)}</script>\n'
+    )
+
+    with open("about.html", "w", encoding="utf-8") as f:
+        f.write(generate_page(site_name, content))
+
+    print("✅ about.html generated (rich summary)")
     return True
 
 # ---------- Helpers for TOC + Categorization ----------
