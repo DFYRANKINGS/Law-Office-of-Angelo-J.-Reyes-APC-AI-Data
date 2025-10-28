@@ -5,6 +5,7 @@ import yaml
 import json
 import re
 from datetime import datetime
+from urllib.parse import urlparse, quote_plus
 
 # =========================
 # Utilities
@@ -113,6 +114,66 @@ def _bullet_points(obj):
             out.append(b); seen.add(b.lower())
     return out[:4]
 
+# ----- URL helpers (NEW) -----
+def normalize_url(url: str, pages_root="https://dfyrankings.github.io"):
+    """Ensure a full absolute URL for display and linking."""
+    if not url:
+        return ""
+    u = url.strip()
+    if re.match(r'^https?://', u, re.I):
+        return u
+    # No scheme: guess
+    if "." not in u and not u.startswith("/"):
+        # treat like a repo or path within Pages root
+        return f"{pages_root}/{u.strip('/')}"
+    return "https://" + u.strip("/")
+
+def display_url_text(url: str):
+    """For the main website link we show the full URL text."""
+    return url or ""
+
+def guess_platform_name(url: str) -> str:
+    """Return a clean platform name from a URL (fallback to a tidied hostname)."""
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+    netloc = netloc.removeprefix("www.")
+    mapping = {
+        "linkedin.com": "LinkedIn",
+        "x.com": "X (Twitter)",
+        "twitter.com": "X (Twitter)",
+        "youtube.com": "YouTube",
+        "youtu.be": "YouTube",
+        "facebook.com": "Facebook",
+        "instagram.com": "Instagram",
+        "tiktok.com": "TikTok",
+        "github.com": "GitHub",
+        "medium.com": "Medium",
+        "pinterest.com": "Pinterest",
+        "reddit.com": "Reddit",
+        "yelp.com": "Yelp",
+        "avvo.com": "Avvo",
+        "justia.com": "Justia",
+        "superlawyers.com": "Super Lawyers",
+        "martindale.com": "Martindale-Hubbell",
+        "findlaw.com": "FindLaw",
+        "lawyers.com": "Lawyers.com",
+        "glassdoor.com": "Glassdoor",
+        "crunchbase.com": "Crunchbase",
+        "google.com": "Google",
+        "g.page": "Google Maps",
+        "maps.google.com": "Google Maps",
+        "linktr.ee": "Linktree",
+        "beacons.ai": "Beacons",
+        "linkin.bio": "Link in Bio",
+    }
+    if netloc in mapping:
+        return mapping[netloc]
+    host_core = netloc.split(":")[0]
+    host_core = host_core.split(".")[-2] if host_core.count(".") >= 1 else host_core
+    return host_core.replace("-", " ").title()
+
 # =========================
 # Contact helpers
 # =========================
@@ -210,7 +271,6 @@ def _map_embed_src(loc, address):
     if map_url: return map_url
     if gmaps:   return gmaps
     if address:
-        from urllib.parse import quote_plus
         return f"https://www.google.com/maps?q={quote_plus(address)}&output=embed"
     return ""
 
@@ -431,7 +491,8 @@ def generate_contact_page():
             phone, email = _extract_contact(loc)
             addr   = _format_address(loc.get("address"), loc)
             hours  = _extract_hours(loc)
-            site, socials = _extract_site_and_social(loc)
+            raw_site, socials = _extract_site_and_social(loc)
+            site = normalize_url(raw_site) if raw_site else ""
             map_src = _map_embed_src(loc, addr)
 
             # Build dedupe signature
@@ -472,9 +533,12 @@ def generate_contact_page():
             block += "</p>"
 
             if socials:
-                block += "<p><strong>Find us:</strong> " + " • ".join(
-                    f"<a href='{escape_html(s)}' target='_blank' rel='nofollow'>{escape_html(s)}</a>" for s in socials[:8]
-                ) + "</p>"
+                pretty = []
+                for s in socials[:8]:
+                    s_norm = normalize_url(s)
+                    label = guess_platform_name(s_norm) + " →"
+                    pretty.append(f"<a href='{escape_html(s_norm)}' target='_blank' rel='nofollow'>{escape_html(label)}</a>")
+                block += "<p><strong>Find us:</strong> " + " • ".join(pretty) + "</p>"
 
             if map_src:
                 block += f"""
@@ -728,7 +792,6 @@ def generate_about_page():
         """Pick best non-empty value per field across all orgs; merge lists like sameAs."""
         merged = {}
         list_keys = {"sameAs", "same_as", "social", "social_links"}
-        # fields we might want to pick best single value
         scalar_order = [
             "entity_name", "name", "legal_name", "brand", "site_title",
             "description", "mission", "vision",
@@ -736,20 +799,16 @@ def generate_about_page():
             "website", "main_website_url", "url",
             "phone", "email",
         ]
-        # take the first non-empty for scalars
         for key in scalar_order:
             for org in orgs:
                 v = org.get(key)
                 if _first_nonempty(v):
                     merged[key] = _first_nonempty(v)
                     break
-
-        # merge all social-like keys into a single list (dedup)
         socials = []
         for org in orgs:
             for lk in list_keys:
                 socials.extend(_as_list(org.get(lk)))
-        # de-dup while preserving order
         seen, dedup = set(), []
         for s in socials:
             if s and s not in seen:
@@ -781,7 +840,6 @@ def generate_about_page():
                     if _is_placeholder_title(t):
                         t = None
                     titles.append(t or _title_from_filename(fn))
-        # de-dup
         seen, out = set(), []
         for t in titles:
             if t and t.lower() not in seen:
@@ -806,7 +864,7 @@ def generate_about_page():
                 count += 1
         return count
 
-    # --- Load & merge org data (this is the key fix) ---
+    # --- Load & merge org data ---
     all_orgs = _load_all_orgs()
     merged = _merge_orgs(all_orgs) if all_orgs else {}
 
@@ -820,16 +878,10 @@ def generate_about_page():
         "Our Firm"
     )
     logo_url = _first_nonempty(merged.get("logo_url"), merged.get("logo"))
-    # include main_website_url as a strong candidate
-   website  = _first_nonempty(merged.get("website"), merged.get("main_website_url"), merged.get("url"))
 
-# Normalize to full absolute URL if missing protocol
-if website and not re.match(r'^https?://', website, re.I):
-    if "." not in website and not website.startswith("/"):
-        # if it's just a name or repo, prepend your GitHub Pages root
-        website = f"https://dfyrankings.github.io/{website.strip('/')}"
-    else:
-        website = "https://" + website.strip("/")
+    # Normalize Website to a full absolute URL
+    website_raw = _first_nonempty(merged.get("website"), merged.get("main_website_url"), merged.get("url"))
+    website = normalize_url(website_raw) if website_raw else ""
 
     desc     = _first_nonempty(merged.get("description")) or f"{site_name} is a results-driven law firm focused on client advocacy and outstanding outcomes."
     mission  = _first_nonempty(merged.get("mission"))
@@ -859,7 +911,7 @@ if website and not re.match(r'^https?://', website, re.I):
     review_count, ratings = 0, []
     if os.path.isdir(reviews_dir):
         for fn in os.listdir(reviews_dir):
-            if not fn.lower().endswith((".json", ".yaml", ".yml")): 
+            if not fn.lower().endswith((".json", ".yaml", ".yml")):
                 continue
             for rec in (load_data(os.path.join(reviews_dir, fn)) or []):
                 if isinstance(rec, dict):
@@ -879,7 +931,7 @@ if website and not re.match(r'^https?://', website, re.I):
             if not fn.lower().endswith((".json", ".yaml", ".yml")):
                 continue
             for loc in (load_data(os.path.join("schemas/locations", fn)) or []):
-                if not isinstance(loc, dict): 
+                if not isinstance(loc, dict):
                     continue
                 for area in _as_list(loc.get("service_areas") or loc.get("areas") or loc.get("locations_served")):
                     service_areas.add(area)
@@ -1004,13 +1056,39 @@ if website and not re.match(r'^https?://', website, re.I):
         </section>
         """)
 
-    # PROFILES from merged sameAs + website
+    # PROFILES from merged sameAs + website (Platform labels)
     if sameas or website:
         links = []
         if website:
-            links.append(f'<li><a href="{escape_html(website)}" target="_blank" rel="nofollow">Website</a></li>')
-        for s in sameas[:48]:
-            links.append(f'<li><a href="{escape_html(s)}" target="_blank" rel="nofollow">{escape_html(s)}</a></li>')
+            links.append(
+                f'<li><a href="{escape_html(website)}" target="_blank" rel="nofollow">{escape_html(display_url_text(website))}</a></li>'
+            )
+    if sameas or website:
+    links = []
+    if website:
+        links.append(
+            f'<li><a href="{escape_html(website)}" target="_blank" rel="nofollow">{escape_html(display_url_text(website))}</a></li>'
+        )
+
+    # Sort so that LinkedIn and YouTube appear first
+    def sort_socials(urls):
+        priority = {"linkedin.com": 1, "youtube.com": 2, "youtu.be": 2}
+        def score(u):
+            u = u.lower()
+            for key, val in priority.items():
+                if key in u:
+                    return val
+            return 99  # all others after
+        return sorted(urls, key=score)
+
+    sorted_sameas = sort_socials(sameas[:48])
+
+    for s in sorted_sameas:
+        s_norm = normalize_url(s)
+        label = guess_platform_name(s_norm) + " →"
+        links.append(
+            f'<li><a href="{escape_html(s_norm)}" target="_blank" rel="nofollow">{escape_html(label)}</a></li>'
+        )
         parts.append(f"""
         <section id="profiles" class="card">
           <h2>Social & Profiles</h2>
@@ -1087,7 +1165,6 @@ def _guess_category_from_text(text: str) -> str:
 
 def _toc_block(title_items):
     """title_items: list of (anchor_id, display_title, category)"""
-    # group by category
     cats = {}
     for aid, disp, cat in title_items:
         cats.setdefault(cat, []).append((aid, disp))
@@ -1134,7 +1211,6 @@ def generate_faq_page():
         print(f"❌ FAQ directory not found: {faq_dir}")
 
     if not items:
-        # Still create the page to avoid 404s
         with open("faqs.html", "w", encoding="utf-8") as f:
             f.write(generate_page("Frequently Asked Questions", "<p>No FAQs found yet.</p>"))
         print("⚠️ faqs.html created with placeholder (no items).")
@@ -1181,7 +1257,6 @@ def generate_help_articles_page():
                     if low.startswith("title:"):
                         title = line.split(":", 1)[1].strip()
                     elif low.startswith("keywords:"):
-                        # simple comma list
                         kws = line.split(":", 1)[1].strip()
                         keywords = [k.strip() for k in kws.split(",") if k.strip()]
                 else:
