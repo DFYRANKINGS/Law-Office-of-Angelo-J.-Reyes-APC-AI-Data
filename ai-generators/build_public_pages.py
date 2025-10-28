@@ -821,7 +821,16 @@ def generate_about_page():
     )
     logo_url = _first_nonempty(merged.get("logo_url"), merged.get("logo"))
     # include main_website_url as a strong candidate
-    website  = _first_nonempty(merged.get("website"), merged.get("main_website_url"), merged.get("url"))
+   website  = _first_nonempty(merged.get("website"), merged.get("main_website_url"), merged.get("url"))
+
+# Normalize to full absolute URL if missing protocol
+if website and not re.match(r'^https?://', website, re.I):
+    if "." not in website and not website.startswith("/"):
+        # if it's just a name or repo, prepend your GitHub Pages root
+        website = f"https://dfyrankings.github.io/{website.strip('/')}"
+    else:
+        website = "https://" + website.strip("/")
+
     desc     = _first_nonempty(merged.get("description")) or f"{site_name} is a results-driven law firm focused on client advocacy and outstanding outcomes."
     mission  = _first_nonempty(merged.get("mission"))
     vision   = _first_nonempty(merged.get("vision"))
