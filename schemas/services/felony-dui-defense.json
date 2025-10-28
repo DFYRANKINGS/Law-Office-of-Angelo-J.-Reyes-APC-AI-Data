@@ -1,9 +1,11 @@
 {
-  "name": "Service 38",
+  "name": "Felony DUI Defense",
   "description": "Defense for felony DUI charges involving repeat offenses, injury, or death, including pretrial motions, trials, and post-conviction relief.",
+  "category": "DUI Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

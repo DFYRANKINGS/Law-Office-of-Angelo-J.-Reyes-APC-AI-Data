@@ -1,9 +1,11 @@
 {
-  "name": "Service 23",
+  "name": "Restraining Order Defense",
   "description": "Representation fighting criminal and civil restraining orders associated with domestic violence, stalking, or harassment claims.",
+  "category": "Criminal Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

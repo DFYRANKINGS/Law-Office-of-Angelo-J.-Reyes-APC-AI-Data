@@ -1,9 +1,11 @@
 {
-  "name": "Service 27",
+  "name": "Repeat DUI Offense Defense",
   "description": "Specialized defense for second or multiple DUI offenses involving increased penalties, license hardship, and incarceration risk.",
+  "category": "DUI Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

@@ -1,9 +1,11 @@
 {
-  "name": "Service 1",
+  "name": "Personal Injury",
   "description": "Representation for victims of car, motorcycle, trucking, slip-and-fall, premises liability, wrongful death, catastrophic injuries; negotiation and trial advocacy for maximum recovery.",
+  "category": "Injury Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "contingency fee",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

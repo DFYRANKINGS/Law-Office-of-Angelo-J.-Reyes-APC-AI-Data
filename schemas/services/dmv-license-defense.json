@@ -1,9 +1,11 @@
 {
-  "name": "Service 12",
+  "name": "DMV License Hearing Services",
   "description": "Full representation at DMV administrative hearings, license reinstatement, and driving privilege defense after DUI, serious traffic, or misdemeanor arrests.",
+  "category": "DUI Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

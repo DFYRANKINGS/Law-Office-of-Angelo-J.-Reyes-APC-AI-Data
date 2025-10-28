@@ -1,9 +1,11 @@
 {
-  "name": "Service 10",
+  "name": "Property Damage Recovery",
   "description": "Helping clients recover vehicle and property repair costs from at-fault parties’ insurance or litigation after traffic accidents.",
+  "category": "Injury Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "contingency/flat",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

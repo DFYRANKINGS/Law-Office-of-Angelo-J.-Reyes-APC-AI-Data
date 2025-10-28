@@ -1,9 +1,11 @@
 {
-  "name": "Service 30",
+  "name": "Vehicular Manslaughter DUI Defense",
   "description": "Defense against felony DUI charges involving death, including negotiation and trial preparation for potentially life-altering allegations.",
+  "category": "Criminal Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

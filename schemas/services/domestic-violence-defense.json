@@ -1,9 +1,11 @@
 {
-  "name": "Service 40",
+  "name": "Domestic Violence Defense",
   "description": "Aggressive defense for misdemeanor and felony domestic violence charges often associated with DUI cases.",
+  "category": "Criminal Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

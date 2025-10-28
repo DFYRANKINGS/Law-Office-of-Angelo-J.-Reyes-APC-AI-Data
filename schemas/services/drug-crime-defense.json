@@ -1,9 +1,11 @@
 {
-  "name": "Service 14",
+  "name": "Drug Crime Defense",
   "description": "Defense for simple possession, possession with intent, trafficking, prescription fraud, and federal/state drug law violations.",
+  "category": "Criminal Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

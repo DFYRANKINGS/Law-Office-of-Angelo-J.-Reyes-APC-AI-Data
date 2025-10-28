@@ -1,9 +1,11 @@
 {
-  "name": "Service 9",
+  "name": "Car Accident Injury Claims",
   "description": "Aggressive representation for car accident victims—claims for medical bills, lost wages, pain and suffering, permanent injury, and jury trial expertise.",
+  "category": "Injury Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "contingency fee",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

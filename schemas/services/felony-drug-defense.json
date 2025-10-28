@@ -1,9 +1,11 @@
 {
-  "name": "Service 25",
+  "name": "Felony Drug Crime Defense",
   "description": "Representation for felony-level drug crimes including possession with intent, trafficking, manufacturing, and distribution under state and federal law.",
+  "category": "Criminal Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

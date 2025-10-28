@@ -1,9 +1,11 @@
 {
-  "name": "Service 11",
+  "name": "Expungements and Record Clearing",
   "description": "Post-conviction relief services—including expungements, reduction of charges, and record sealing for eligible misdemeanors, felonies, and DUI convictions.",
+  "category": "Criminal Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

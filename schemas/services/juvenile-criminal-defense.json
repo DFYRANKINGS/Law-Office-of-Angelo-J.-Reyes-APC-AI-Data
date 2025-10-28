@@ -1,9 +1,11 @@
 {
-  "name": "Service 36",
+  "name": "Juvenile Criminal Defense",
   "description": "Comprehensive representation of juveniles charged with misdemeanors, felonies, or DUI, focusing on rehabilitation and legal protection.",
+  "category": "Criminal Law",
+  "license_number": 325508,
+  "bar_number": 325508,
+  "npi_number": "California State Bar",
+  "certification_body": 100,
   "priceRange": "flat/varies*",
-  "license": "325508",
-  "barNumber": "325508",
-  "npiNumber": "California State Bar",
-  "certification": "100"
+  "featured": true
 }

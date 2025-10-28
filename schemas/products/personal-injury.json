@@ -1,0 +1,10 @@
+{
+  "name": "Personal Injury",
+  "short_description": "Legal representation for accidental injury victims.",
+  "description": "Full-service legal support for auto accidents, slip-and-fall, wrongful death, and catastrophic injuries, with a focus on maximum compensation and client advocacy.",
+  "price": "contingency*",
+  "features": "Trial-level prep, no upfront fee, client-first approach, strategic negotiation, statewide service",
+  "sku": "PI001",
+  "brand": "Law Office of Angelo J. Reyes, APC",
+  "offers_price_currency": "USD"
+}
