@@ -1,7 +1,7 @@
 ---
 title: What’s the Difference Between a Misdemeanor and a Felony?
 slug: misdemeanor-vs-felony-ca
-article_type: Help Article
+article_type: Blog Article
 keywords: criminal law, misdemeanor, felony
 url: https://www.angeloreyeslaw.com/misdemeanor-vs-felony
 published_date: 2025-05-01T00:00:00

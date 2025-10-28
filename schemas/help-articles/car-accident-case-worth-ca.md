@@ -1,7 +1,7 @@
 ---
 title: How Much Is My Car Accident Case Worth in California?
 slug: car-accident-case-worth-ca
-article_type: Help Article
+article_type: Blog Article
 keywords: car accident, personal injury, California
 url: https://www.angeloreyeslaw.com/how-much-car-accident-case-worth
 published_date: 2025-04-10T00:00:00

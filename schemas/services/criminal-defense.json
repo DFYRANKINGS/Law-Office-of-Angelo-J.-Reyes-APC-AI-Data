@@ -1,11 +1,7 @@
 {
   "name": "Criminal Defense",
-  "description": "Defense for all state and federal criminal charges: felonies, misdemeanors, drug offenses, violence, theft, sex crimes, domestic violence, white-collar crime, and appeals.",
+  "description": "Defense for clients facing charges including DUI, drug offenses, domestic violence, assault, theft, white-collar crimes, sex crimes; aggressive trial preparation and dedicated case strategies for favorable outcomes.",
   "category": "Criminal Law",
-  "license_number": 325508,
-  "bar_number": 325508,
-  "npi_number": "California State Bar",
-  "certification_body": 100,
   "priceRange": "flat/varies*",
   "featured": true
 }
