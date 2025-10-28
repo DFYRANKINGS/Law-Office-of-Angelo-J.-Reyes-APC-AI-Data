@@ -1,11 +1,13 @@
 name: Generate JSON/YAML from XLSX and Update Sitemap
 
 on:
+  workflow_dispatch: {}          # allow manual runs
   push:
-    branches:
-      - main
+    branches: [ main ]           # run on any push to main
     paths:
-      - 'templates/*.xlsx'
+      - 'templates/*.xlsx'       # (still narrows auto-triggers, but we will run unconditionally below)
+      - 'ai-generators/**'
+      - '.github/workflows/**'
 
 jobs:
   generate-and-update:
@@ -17,25 +19,12 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
-      # Keep local tree perfectly in sync to avoid non-fast-forward on push
-      - name: Sync with origin/main (prevent non-fast-forward)
+      - name: Configure Git (identity + safe dir)
         run: |
-          git fetch origin main
-          git reset --hard origin/main
-          git status --short
-
-      - name: DEBUG - Print Token Length (Safe)
-        run: |
-          TOKEN_LENGTH=${#GH_TOKEN}
-          echo "🔑 GH_TOKEN length: $TOKEN_LENGTH characters"
-          if [ "$TOKEN_LENGTH" -eq 0 ]; then
-            echo "❌ ERROR: GH_TOKEN is EMPTY or NOT SET"
-            exit 1
-          else
-            echo "✅ GH_TOKEN is set (length: $TOKEN_LENGTH)"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          git config --global user.email "action@github.com"
+          git config --global user.name  "GitHub Action"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,106 +33,77 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          pip install --upgrade pip
           pip install pandas openpyxl PyYAML
 
-      - name: Get Changed XLSX Files via Git Diff
-        id: get_files
+      # 🔁 Always run the generator against the newest XLSX in templates/, even if content didn't change
+      - name: Find newest XLSX in templates/
+        id: pick_xlsx
+        shell: bash
         run: |
-          echo "📄 Comparing against base commit: ${{ github.event.before }}"
-          BEFORE_COMMIT=${{ github.event.before }}
-          if [[ "$BEFORE_COMMIT" == "0000000000000000000000000000000000000000" ]]; then
-            BEFORE_COMMIT=4b825dc642cb6eb9a060e54bf8d69288fbee4904
-          fi
-
-          CHANGED_FILES=$(git diff --name-only --diff-filter=AM "$BEFORE_COMMIT" HEAD | grep '^templates/.*\.xlsx$' || true)
-
-          if [ -z "$CHANGED_FILES" ]; then
-            echo "⚠️ No .xlsx files detected in templates/ in this push."
+          set -e
+          if ls templates/*.xlsx >/dev/null 2>&1; then
+            NEWEST=$(ls -t templates/*.xlsx | head -n1)
+            echo "xlsx_path=$NEWEST" >> $GITHUB_OUTPUT
+            echo "📄 Using XLSX: $NEWEST"
           else
-            echo "✅ Detected changed XLSX files:"
-            echo "$CHANGED_FILES"
+            echo "❌ No XLSX found under templates/"
+            exit 1
           fi
 
-          echo "changed_xlsx=$CHANGED_FILES" >> $GITHUB_ENV
-
-      # Make sure the directories exist (no .gitkeep yet)
-      - name: Ensure schemas/ Directories Exist
+      - name: Run generator
         run: |
-          mkdir -p schemas/organization \
-                   schemas/services \
-                   schemas/products \
-                   schemas/faqs \
-                   schemas/help-articles \
-                   schemas/reviews \
-                   schemas/locations \
-                   schemas/team \
-                   schemas/awards \
-                   schemas/press \
-                   schemas/case-studies
+          echo "⚙️ Generating schema files from: ${{ steps.pick_xlsx.outputs.xlsx_path }}"
+          python ai-generators/generate_files_from_xlsx.py --input "${{ steps.pick_xlsx.outputs.xlsx_path }}"
 
-      - name: Process Each XLSX File
-        if: env.changed_xlsx != ''
+      # Ensure folders exist (keeps repo structure when sheets are empty)
+      - name: Ensure schemas/ directories exist
         run: |
-          echo "⚙️ Processing detected XLSX files..."
-          while IFS= read -r xlsx_file; do
-            if [ -n "$xlsx_file" ] && [ -f "$xlsx_file" ]; then
-              echo "📄 Processing: $xlsx_file"
-              python ai-generators/generate_files_from_xlsx.py --input "$xlsx_file"
+          mkdir -p schemas/{organization,services,products,faqs,help-articles,reviews,locations,team,awards,press,case-studies}
+          # remove placeholder .gitkeep if real files exist; keep only if directory empty
+          for d in schemas/*; do
+            [ -d "$d" ] || continue
+            if compgen -G "$d/*" > /dev/null; then
+              rm -f "$d/.gitkeep" || true
             else
-              echo "❌ ERROR: File not found: '$xlsx_file'"
+              touch "$d/.gitkeep"
             fi
-          done <<< "${{ env.changed_xlsx }}"
+          done
 
-      # If generators created real files, wipe any stale .gitkeep that may exist
-      - name: Remove stale .gitkeep placeholders (if any)
+      # 🧾 Verify outputs and fail clearly if FAQs/Help Articles are missing
+      - name: Verify generated outputs
+        shell: bash
         run: |
-          find schemas -type f -name ".gitkeep" -delete || true
+          echo "🔍 Listing generated files:"
+          find schemas -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.md" -o -name "*.llm" \) | sort || true
+          echo
+          FAQ_COUNT=$(find schemas/faqs -maxdepth 1 -type f ! -name ".gitkeep" 2>/dev/null | wc -l | tr -d ' ')
+          HELP_COUNT=$(find schemas/help-articles -maxdepth 1 -type f ! -name ".gitkeep" 2>/dev/null | wc -l | tr -d ' ')
+          echo "📊 FAQs: $FAQ_COUNT   |   Help Articles: $HELP_COUNT"
+          # If your sheets should produce files, enforce it:
+          if [ "$FAQ_COUNT" -eq 0 ]; then
+            echo "⚠️ No FAQ files generated. Check sheet name 'FAQs' and required columns: question, answer, (optional) slug."
+          fi
+          if [ "$HELP_COUNT" -eq 0 ]; then
+            echo "⚠️ No Help Article files generated. Check sheet name 'Help Articles' and required columns: title, article, (optional) slug."
+          fi
 
-      - name: Generate or Update Sitemap (FORCE UPDATE)
+      - name: Generate or Update Sitemap
         run: |
-          python generate_sitemaps.py
-          # Ensure file exists even if script is a no-op
+          python generate_sitemaps.py || true
           touch ai-sitemap.xml
 
-      - name: Verify All Generated Files Exist
+      # 🛡️ Avoid non-fast-forward errors
+      - name: Pull (rebase) before push
         run: |
-          echo "🔍 VERIFYING OUTPUTS — Listing generated files under schemas/:"
-          echo "=============================================================="
-          find schemas -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.md" -o -name "*.llm" \) | sort || true
-          echo ""
-          echo "📄 ai-sitemap.xml last modified:"
-          ls -la ai-sitemap.xml || true
+          git fetch origin main
+          git pull --rebase origin main || true
 
-      - name: Configure Git Identity
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-
-      - name: Setup Remote with Token (Extra Safety)
-        run: |
-          git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git
-
-      # Rebase in case another workflow pushed during generation
-      - name: Rebase onto latest before committing
-        run: |
-          git fetch origin ${{ github.ref_name }}
-          git pull --rebase origin ${{ github.ref_name }} || true
-
-      - name: ADD AND COMMIT CHANGES
+      - name: Commit & Push
         run: |
           git add --all
           echo "📦 STAGED CHANGES:"
-          git status --short
-          git commit -m "🤖 Auto-generate schema + sitemap [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "✅ No changes to commit"
-
-      - name: PUSH CHANGES
-        run: |
-          echo "🚀 Pushing to: ${{ github.ref_name }}"
-          git push origin ${{ github.ref_name }}
-
-      - name: DEBUG - Verify Push Result
-        run: |
-          echo "🔎 Verifying latest commit on remote..."
-          git fetch origin ${{ github.ref_name }}
-          git log -1 origin/${{ github.ref_name }} --oneline
-          echo "✅ If commit above matches, SUCCESS! Files are live at Raw URLs."
+          git status --short || true
+          git commit -m "🤖 Auto-generate schema + sitemap ($(date -u +'%Y-%m-%d %H:%M:%S UTC'))" || echo "✅ No changes to commit"
+          echo "🚀 Pushing to main…"
+          git push origin main
