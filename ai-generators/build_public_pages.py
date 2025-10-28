@@ -701,32 +701,65 @@ def generate_index_page():
 
 def generate_about_page():
     """
-    Build a rich About page that summarizes what the firm does:
-    - Pulls org details (description, mission, vision, website, sameAs)
-    - Counts services / FAQs / help articles / reviews / team / locations
-    - Shows practice area previews, locations, team snapshot, press/awards, profiles
-    - Emits Organization JSON-LD for AI/SEO
+    Rich About page that MERGES all org records and surfaces full sameAs/socials.
     """
+
     # --- helpers ---
-    def _load_first_org():
+    def _load_all_orgs():
         candidate_dirs = [
             "schemas/organization", "schemas/organizations",
             "schemas/company", "schemas/entity", "schemas/business",
         ]
+        orgs = []
         for d in candidate_dirs:
-            if not os.path.isdir(d): 
+            if not os.path.isdir(d):
                 continue
-            for fn in os.listdir(d):
-                if fn.lower().endswith((".json", ".yaml", ".yml")):
-                    recs = load_data(os.path.join(d, fn))
-                    if recs:
-                        org = recs[0] if isinstance(recs, list) else recs
-                        if isinstance(org, dict):
-                            return org
-        return {}
+            for fn in sorted(os.listdir(d)):
+                if not fn.lower().endswith((".json", ".yaml", ".yml")):
+                    continue
+                recs = load_data(os.path.join(d, fn))
+                if isinstance(recs, list):
+                    orgs.extend([r for r in recs if isinstance(r, dict)])
+                elif isinstance(recs, dict):
+                    orgs.append(recs)
+        return orgs
+
+    def _merge_orgs(orgs):
+        """Pick best non-empty value per field across all orgs; merge lists like sameAs."""
+        merged = {}
+        list_keys = {"sameAs", "same_as", "social", "social_links"}
+        # fields we might want to pick best single value
+        scalar_order = [
+            "entity_name", "name", "legal_name", "brand", "site_title",
+            "description", "mission", "vision",
+            "logo_url", "logo",
+            "website", "main_website_url", "url",
+            "phone", "email",
+        ]
+        # take the first non-empty for scalars
+        for key in scalar_order:
+            for org in orgs:
+                v = org.get(key)
+                if _first_nonempty(v):
+                    merged[key] = _first_nonempty(v)
+                    break
+
+        # merge all social-like keys into a single list (dedup)
+        socials = []
+        for org in orgs:
+            for lk in list_keys:
+                socials.extend(_as_list(org.get(lk)))
+        # de-dup while preserving order
+        seen, dedup = set(), []
+        for s in socials:
+            if s and s not in seen:
+                dedup.append(s)
+                seen.add(s)
+        if dedup:
+            merged["sameAs_merged"] = dedup
+        return merged
 
     def _gather_titles_from_dir(root_dir, key_list=None, nested_list_key=None, max_items=None):
-        """Collect human titles from JSON/YAML in a folder."""
         titles = []
         if not os.path.isdir(root_dir):
             return titles
@@ -748,7 +781,7 @@ def generate_about_page():
                     if _is_placeholder_title(t):
                         t = None
                     titles.append(t or _title_from_filename(fn))
-        # de-dup preserve order
+        # de-dup
         seen, out = set(), []
         for t in titles:
             if t and t.lower() not in seen:
@@ -763,53 +796,58 @@ def generate_about_page():
         for fn in os.listdir(root_dir):
             if not fn.lower().endswith((".json", ".yaml", ".yml", ".md", ".llm")):
                 continue
-            recs = load_data(os.path.join(root_dir, fn)) if fn.lower().endswith((".json", ".yaml", ".yml")) else [True]
-            if isinstance(recs, list):
-                count += len(recs)
+            if fn.lower().endswith((".json", ".yaml", ".yml")):
+                recs = load_data(os.path.join(root_dir, fn))
+                if isinstance(recs, list):
+                    count += len(recs)
+                else:
+                    count += 1
             else:
                 count += 1
         return count
 
-    def _collect_sameas(*dicts):
-        links = []
-        for d in dicts:
-            if isinstance(d, dict):
-                links += _as_list(d.get("sameAs") or d.get("same_as") or d.get("social") or d.get("social_links"))
-        # de-dup
-        seen, out = set(), []
-        for u in links:
-            if u and u not in seen:
-                out.append(u)
-                seen.add(u)
-        return out
+    # --- Load & merge org data (this is the key fix) ---
+    all_orgs = _load_all_orgs()
+    merged = _merge_orgs(all_orgs) if all_orgs else {}
 
-    # --- Load org and roll-up facts ---
-    org = _load_first_org()
-    site_name = _first_nonempty(org.get("entity_name"), org.get("name")) or (load_org_meta().get("name") or "Our Firm")
-    logo_url  = _first_nonempty(org.get("logo_url"), org.get("logo"))
-    website   = _first_nonempty(org.get("website"), org.get("url"))
-    desc      = _first_nonempty(org.get("description"))
-    mission   = _first_nonempty(org.get("mission"))
-    vision    = _first_nonempty(org.get("vision"))
-    phone     = _first_nonempty(org.get("phone"), _alias_get(org, "phone"))
-    email     = _first_nonempty(org.get("email"), _alias_get(org, "email"))
-    sameas    = _collect_sameas(org)
+    site_name = _first_nonempty(
+        merged.get("entity_name"),
+        merged.get("name"),
+        merged.get("legal_name"),
+        merged.get("brand"),
+        merged.get("site_title"),
+        load_org_meta().get("name"),
+        "Our Firm"
+    )
+    logo_url = _first_nonempty(merged.get("logo_url"), merged.get("logo"))
+    # include main_website_url as a strong candidate
+    website  = _first_nonempty(merged.get("website"), merged.get("main_website_url"), merged.get("url"))
+    desc     = _first_nonempty(merged.get("description")) or f"{site_name} is a results-driven law firm focused on client advocacy and outstanding outcomes."
+    mission  = _first_nonempty(merged.get("mission"))
+    vision   = _first_nonempty(merged.get("vision"))
+    phone    = _first_nonempty(merged.get("phone"))
+    email    = _first_nonempty(merged.get("email"))
 
-    # Services preview (titles)
+    # merged sameAs list
+    sameas   = merged.get("sameAs_merged", [])
+
+    # roll-ups
     service_titles = _gather_titles_from_dir("schemas/services",
                                              key_list=["title","service_name","name","headline","category","type","label"],
                                              nested_list_key="services",
                                              max_items=12)
     services_count = _count_records("schemas/services")
-
-    # FAQs / Help Articles
     faqs_count  = _count_records("schemas/faqs")
-    help_count  = len([f for f in os.listdir("schemas/help-articles")] ) if os.path.isdir("schemas/help-articles") else 0
+    help_count  = _count_records("schemas/help-articles")
+    team_count  = _count_records("schemas/team")
+    loc_count   = _count_records("schemas/locations")
+    awards_count= _count_records("schemas/awards")
+    press_count = _count_records("schemas/press")
+    cases_count = _count_records("schemas/case-studies")
 
-    # Reviews (avg + count)
+    # reviews summary
     reviews_dir = "schemas/reviews"
-    review_count = 0
-    ratings = []
+    review_count, ratings = 0, []
     if os.path.isdir(reviews_dir):
         for fn in os.listdir(reviews_dir):
             if not fn.lower().endswith((".json", ".yaml", ".yml")): 
@@ -824,14 +862,7 @@ def generate_about_page():
                         pass
     avg_rating = (sum(ratings) / len(ratings)) if ratings else None
 
-    # Team / Locations / Awards / Press / Case Studies
-    team_count   = _count_records("schemas/team")
-    loc_count    = _count_records("schemas/locations")
-    awards_count = _count_records("schemas/awards")
-    press_count  = _count_records("schemas/press")
-    cases_count  = _count_records("schemas/case-studies")
-
-    # Derive service areas & a primary address (first location)
+    # service areas + primary address
     service_areas = set()
     address_str = ""
     if os.path.isdir("schemas/locations"):
@@ -839,20 +870,14 @@ def generate_about_page():
             if not fn.lower().endswith((".json", ".yaml", ".yml")):
                 continue
             for loc in (load_data(os.path.join("schemas/locations", fn)) or []):
-                if not isinstance(loc, dict): continue
+                if not isinstance(loc, dict): 
+                    continue
                 for area in _as_list(loc.get("service_areas") or loc.get("areas") or loc.get("locations_served")):
                     service_areas.add(area)
                 if not address_str:
                     address_str = _format_address(loc.get("address"), loc)
 
-                # Also gather sameAs from locations if present
-                sameas = _collect_sameas({"sameAs": sameas}, loc)
-
-    # Fallback desc
-    if not desc:
-        desc = f"{site_name} is a results-driven law firm focused on client advocacy and outstanding outcomes."
-
-    # --- Build sections ---
+    # --- Build page ---
     toc = """
     <nav class="card" aria-label="Page sections" style="margin-top:1rem">
       <strong>On this page:</strong>
@@ -872,12 +897,9 @@ def generate_about_page():
     """
 
     parts = []
-
-    # Header/logo
     if logo_url:
         parts.append(f'<img src="{escape_html(logo_url)}" alt="{escape_html(site_name)}" style="max-height:120px;margin-bottom:1.25rem;border-radius:8px">')
 
-    # Overview
     parts.append(f'<section id="overview" class="card"><h2>Overview</h2><p>{escape_html(desc)}</p>')
     if mission:
         parts.append(f"<h3>Our Mission</h3><p>{escape_html(mission)}</p>")
@@ -885,19 +907,16 @@ def generate_about_page():
         parts.append(f"<h3>Our Vision</h3><p>{escape_html(vision)}</p>")
     parts.append("</section>")
 
-    # Practice Areas preview
     if service_titles:
         areas_list = "".join(f"<li>{escape_html(t)}</li>" for t in service_titles)
         parts.append(f"""
         <section id="practice-areas" class="card">
           <h2>Practice Areas</h2>
-          <p>We cover a broad spectrum of matters. Here’s a quick snapshot:</p>
           <ul>{areas_list}</ul>
           <p><a href="services.html">Browse all services ({services_count}) →</a></p>
         </section>
         """)
 
-    # Key Facts
     facts = []
     facts.append(f"<strong>Services:</strong> {services_count}")
     facts.append(f"<strong>FAQs:</strong> {faqs_count}")
@@ -918,10 +937,8 @@ def generate_about_page():
 
     parts.append('<section id="facts" class="card"><h2>Key Facts</h2><ul>' + "".join(f"<li>{row}</li>" for row in facts) + "</ul></section>")
 
-    # Locations & Hours (brief)
     if address_str or loc_count:
         hours_text = ""
-        # Try to extract hours from the first location again for display
         if os.path.isdir("schemas/locations"):
             for fn in os.listdir("schemas/locations"):
                 if not fn.lower().endswith((".json", ".yaml", ".yml")): continue
@@ -940,27 +957,22 @@ def generate_about_page():
         </section>
         """)
 
-    # Team snapshot
     if team_count:
         parts.append(f"""
         <section id="team" class="card">
           <h2>Team</h2>
-          <p>Dedicated professionals committed to client success. <a href="about.html#team">Learn more</a>.</p>
           <p><em>Total team members:</em> {team_count}</p>
         </section>
         """)
 
-    # Reviews
     if review_count:
         parts.append(f"""
         <section id="reviews" class="card">
           <h2>Reviews</h2>
-          <p>Client feedback highlights our advocacy and outcomes.</p>
           <p><a href="testimonials.html">Read testimonials →</a></p>
         </section>
         """)
 
-    # Press & Awards
     if press_count or awards_count:
         parts.append(f"""
         <section id="press-awards" class="card">
@@ -972,7 +984,6 @@ def generate_about_page():
         </section>
         """)
 
-    # Helpful resources
     if faqs_count or help_count:
         parts.append(f"""
         <section id="resources" class="card">
@@ -984,12 +995,12 @@ def generate_about_page():
         </section>
         """)
 
-    # Profiles / sameAs
+    # PROFILES from merged sameAs + website
     if sameas or website:
         links = []
         if website:
             links.append(f'<li><a href="{escape_html(website)}" target="_blank" rel="nofollow">Website</a></li>')
-        for s in sameas[:24]:
+        for s in sameas[:48]:
             links.append(f'<li><a href="{escape_html(s)}" target="_blank" rel="nofollow">{escape_html(s)}</a></li>')
         parts.append(f"""
         <section id="profiles" class="card">
@@ -998,20 +1009,18 @@ def generate_about_page():
         </section>
         """)
 
-    # Contact CTA
     contact_bits = []
     if phone: contact_bits.append(f"<strong>Phone:</strong> <a href='tel:{escape_html(phone)}'>{escape_html(phone)}</a>")
     if email: contact_bits.append(f"<strong>Email:</strong> <a href='mailto:{escape_html(email)}'>{escape_html(email)}</a>")
     parts.append(f"""
     <section id="contact" class="card">
       <h2>Ready to Talk?</h2>
-      <p>Have a matter on your mind? We’re here to help.</p>
       <p>{' &nbsp;•&nbsp; '.join(contact_bits) if contact_bits else ''}</p>
       <p><a href="contact.html">Contact us →</a></p>
     </section>
     """)
 
-    # Organization JSON-LD
+    # Organization JSON-LD (now with merged sameAs)
     json_ld = {
         "@context": "https://schema.org",
         "@type": "LegalService",
@@ -1023,7 +1032,6 @@ def generate_about_page():
         **({"sameAs": sameas} if sameas else {}),
     }
     if address_str:
-        # basic text address (not structured parts because inputs vary)
         json_ld["address"] = {"@type": "PostalAddress", "streetAddress": address_str}
 
     content = (
@@ -1035,7 +1043,7 @@ def generate_about_page():
     with open("about.html", "w", encoding="utf-8") as f:
         f.write(generate_page(site_name, content))
 
-    print("✅ about.html generated (rich summary)")
+    print("✅ about.html generated (merged org + full sameAs)")
     return True
 
 # ---------- Helpers for TOC + Categorization ----------
