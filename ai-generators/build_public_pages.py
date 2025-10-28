@@ -371,11 +371,19 @@ def generate_page(title, content):
 # Pages
 # =========================
 def generate_contact_page():
+    """
+    Builds contact.html from schemas/locations/*.{json,yaml,yml}
+    Renders a top 'Quick Contact' card, then deduped location card(s).
+    Deduping key = (entity, person, phone, email, address, map_src) normalized.
+    """
     locations_dir = "schemas/locations"
     print(f"🔍 Checking contact data in: {locations_dir}")
     if not os.path.exists(locations_dir):
-        print(f"❌ Locations directory not found: {locations_dir} — skipping contact.html")
-        return False
+        # Still create the page to avoid 404s
+        with open("contact.html", "w", encoding="utf-8") as f:
+            f.write(generate_page("Contact Us", "<p>No contact locations found yet.</p>"))
+        print("⚠️ contact.html created with placeholder (no data; folder missing).")
+        return True
 
     def _extract_contact(loc):
         phone = _first_nonempty(_alias_get(loc, "phone"))
@@ -387,11 +395,22 @@ def generate_contact_page():
         socials = _as_list(_alias_get(loc, "sameAs"))
         return website, socials
 
+    def _norm(s: str) -> str:
+        return (s or "").strip().lower()
+
+    def _norm_phone(s: str) -> str:
+        return re.sub(r"\D+", "", s or "")
+
     items = []
     files_seen = records_seen = rendered = 0
-    first_label = ""
-    first_phone = ""
-    first_email = ""
+
+    # Quick Contact fields (prefer person over entity if available)
+    quick_label = ""
+    quick_phone = ""
+    quick_email = ""
+
+    # Signatures we've already rendered
+    seen = set()
 
     for fname in sorted(os.listdir(locations_dir)):
         if not fname.lower().endswith((".json", ".yaml", ".yml")):
@@ -401,6 +420,7 @@ def generate_contact_page():
         data = load_data(path)
         if not data:
             continue
+
         for loc in _normalize_records(data):
             if not isinstance(loc, dict):
                 continue
@@ -408,25 +428,47 @@ def generate_contact_page():
 
             entity = _first_nonempty(_alias_get(loc, "entity_name"), loc.get("location_name")) or "Location"
             person = _first_nonempty(_alias_get(loc, "contact_person"))
-            label  = person or entity
             phone, email = _extract_contact(loc)
             addr   = _format_address(loc.get("address"), loc)
             hours  = _extract_hours(loc)
             site, socials = _extract_site_and_social(loc)
             map_src = _map_embed_src(loc, addr)
 
-            if not first_label and label: first_label = label
-            if not first_phone and phone: first_phone = phone
-            if not first_email and email: first_email = email
+            # Build dedupe signature
+            sig = (
+                _norm(entity),
+                _norm(person),
+                _norm_phone(phone),
+                _norm(email),
+                _norm(addr),
+                _norm(map_src),
+            )
+            if sig in seen:
+                continue
+            seen.add(sig)
+
+            # Prime quick contact once, preferring a person label
+            if not quick_label:
+                quick_label = person or entity
+            if not quick_phone and phone:
+                quick_phone = phone
+            if not quick_email and email:
+                quick_email = email
 
             block = f"<div class='card'>"
             block += f"<h3>{escape_html(entity)}</h3><p>"
-            if person: block += f"<strong>Contact:</strong> {escape_html(person)}<br>"
-            if addr:   block += f"<strong>Address:</strong> {escape_html(addr)}<br>"
-            if phone:  block += f"<strong>Phone:</strong> <a href='tel:{escape_html(phone)}'>{escape_html(phone)}</a><br>"
-            if email:  block += f"<strong>Email:</strong> <a href='mailto:{escape_html(email)}'>{escape_html(email)}</a><br>"
-            if hours:  block += f"<strong>Hours:</strong> {escape_html(hours)}<br>"
-            if site:   block += f"<strong>Website:</strong> <a href='{escape_html(site)}' target='_blank' rel='nofollow'>{escape_html(site)}</a><br>"
+            if person:
+                block += f"<strong>Contact:</strong> {escape_html(person)}<br>"
+            if addr:
+                block += f"<strong>Address:</strong> {escape_html(addr)}<br>"
+            if phone:
+                block += f"<strong>Phone:</strong> <a href='tel:{escape_html(phone)}'>{escape_html(phone)}</a><br>"
+            if email:
+                block += f"<strong>Email:</strong> <a href='mailto:{escape_html(email)}'>{escape_html(email)}</a><br>"
+            if hours:
+                block += f"<strong>Hours:</strong> {escape_html(hours)}<br>"
+            if site:
+                block += f"<strong>Website:</strong> <a href='{escape_html(site)}' target='_blank' rel='nofollow'>{escape_html(site)}</a><br>"
             block += "</p>"
 
             if socials:
@@ -443,31 +485,26 @@ def generate_contact_page():
                 """
 
             block += "</div>"
-            items.append(block); rendered += 1
+            items.append(block)
+            rendered += 1
 
-    if not items:
-        # Still create the page (avoid 404)
-        with open("contact.html", "w", encoding="utf-8") as f:
-            f.write(generate_page("Contact Us", "<p>No contact locations found yet.</p>"))
-        print("⚠️ contact.html created with placeholder (no data).")
-        return True
-
+    # Always create the page (avoid 404s)
     intro = "<p>We’d love to hear from you. Reach out using the details below or visit us at our offices.</p>"
-    if first_label or first_phone or first_email:
+    if quick_label or quick_phone or quick_email:
         intro += "<div class='card'><h2>Quick Contact</h2>"
-        if first_label:
-            intro += f"<p><strong>{escape_html(first_label)}</strong></p>"
-        if first_phone:
-            intro += f"<p><strong>Phone:</strong> <a href='tel:{escape_html(first_phone)}'>{escape_html(first_phone)}</a></p>"
-        if first_email:
-            intro += f"<p><strong>Email:</strong> <a href='mailto:{escape_html(first_email)}'>{escape_html(first_email)}</a></p>"
+        if quick_label:
+            intro += f"<p><strong>{escape_html(quick_label)}</strong></p>"
+        if quick_phone:
+            intro += f"<p><strong>Phone:</strong> <a href='tel:{escape_html(quick_phone)}'>{escape_html(quick_phone)}</a></p>"
+        if quick_email:
+            intro += f"<p><strong>Email:</strong> <a href='mailto:{escape_html(quick_email)}'>{escape_html(quick_email)}</a></p>"
         intro += "</div>"
 
-    content = intro + "".join(items)
+    content = (intro + "".join(items)) if items else (intro + "<p>No contact locations found yet.</p>")
     with open("contact.html", "w", encoding="utf-8") as f:
         f.write(generate_page("Contact Us", content))
 
-    print(f"✅ contact.html generated — {rendered} location card(s) from {files_seen} file(s), {records_seen} record(s)")
+    print(f"✅ contact.html generated — {rendered} unique location card(s) from {files_seen} file(s), {records_seen} record(s) scanned (deduped: {records_seen - rendered})")
     return True
 
 def generate_services_page():
